@@ -56,9 +56,12 @@ EXPECTED_VAL_IDS = {
 # 数据集里没有的驾驶工况（D29：551_HWFET 被排除）
 MISSING_DRIVE = {("25degC", "HWFET")}
 
-# 验证误差只在"序列开始 119 s 之后"（重采样后行号 >= 119）的点上计算，
-# 这正是最长窗口 W=120 能覆盖的点，保证 18 组配置比较的是同一批点。
-EVAL_START_INDEX = 119
+# 验证误差（和早停用的验证 loss）只在"序列内行号 >= 评估起点"的点上计算，
+# 评估起点取最长窗口 W_max 能覆盖的第一个点，即 W_max - 1，保证各配置比较的是同一批点。
+# 最初 18 组（W <= 120）用的是 119；加入 W = 180、240 之后统一改为 239，这里是默认值，
+# sweep_lstm.py / evaluate_lstm.py 都可以用 --eval-start 另外指定。
+EVAL_START_INDEX = 239
+EVAL_START_INDEX_ORIGINAL = 119  # 最初 18 组训练时（早停）用的评估起点
 
 
 class TestSetAccessError(RuntimeError):
@@ -299,7 +302,7 @@ class WindowDataset(Dataset):
 
     min_end_index：只保留"序列内行号 >= min_end_index"的窗口终点。
         训练集用 W-1（所有能切出完整窗口的点）；
-        验证集/测试集用 EVAL_START_INDEX（119），保证各窗口长度评估同一批点。
+        验证集/测试集用评估起点（默认 EVAL_START_INDEX = 239），保证各窗口长度评估同一批点。
     """
 
     def __init__(self, seqs: list[Sequence], stats: dict, window: int,
@@ -369,7 +372,7 @@ class WindowDataset(Dataset):
 # ---------------------------------------------------------------------------
 # 直接运行：打印划分
 # ---------------------------------------------------------------------------
-def _print_split_summary(folders, windows):
+def _print_split_summary(folders, windows, eval_start):
     splits = build_splits(folders)
     seqs = {k: load_sequences(v, log=lambda *_: None) for k, v in splits.items()}
     stats = compute_norm_stats(seqs["train"])
@@ -382,13 +385,13 @@ def _print_split_summary(folders, windows):
             if split == "train":
                 counts = [max(0, len(s) - w + 1) for w in windows]
             else:
-                counts = [max(0, len(s) - max(w - 1, EVAL_START_INDEX)) if len(s) >= w else 0
+                counts = [max(0, len(s) - max(w - 1, eval_start)) if len(s) >= w else 0
                           for w in windows]
             print(f"{s.info.id:32s}{s.info.temp_c:>6d}{len(s):>10,d}"
                   + "".join(f"{c:>10,d}" for c in counts))
         totals = []
         for w in windows:
-            min_end = None if split == "train" else EVAL_START_INDEX
+            min_end = None if split == "train" else eval_start
             ds = WindowDataset(seqs[split], stats, w, min_end, log=lambda *_: None)
             totals.append(len(ds))
             if ds.skipped:
@@ -396,7 +399,7 @@ def _print_split_summary(folders, windows):
         print(f"{'合计':32s}{'':>6s}{sum(len(s) for s in seqs[split]):>10,d}"
               + "".join(f"{t:>10,d}" for t in totals))
     print("\n说明：训练集窗口终点为每条序列的第 W-1 行起；验证/测试集窗口终点为第 "
-          f"{EVAL_START_INDEX} 行起（三种 W 相同）。")
+          f"{eval_start} 行起（W <= {eval_start + 1} 时各 W 相同）。")
     ids = [{s.id for s in v} for v in splits.values()]
     print("三个集合两两无重叠：", not (ids[0] & ids[1] or ids[0] & ids[2] or ids[1] & ids[2]))
 
@@ -404,6 +407,8 @@ def _print_split_summary(folders, windows):
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="打印训练/验证/测试集的文件清单和窗口数")
     p.add_argument("--folders", nargs="+", default=None, help="只看这些温度文件夹")
-    p.add_argument("--windows", nargs="+", type=int, default=[30, 60, 120])
+    p.add_argument("--windows", nargs="+", type=int, default=[30, 60, 120, 180, 240])
+    p.add_argument("--eval-start", type=int, default=EVAL_START_INDEX,
+                   help=f"验证/测试集的评估起点（行号），默认 {EVAL_START_INDEX}")
     a = p.parse_args()
-    _print_split_summary(a.folders, a.windows)
+    _print_split_summary(a.folders, a.windows, a.eval_start)

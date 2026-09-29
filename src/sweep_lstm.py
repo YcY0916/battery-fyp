@@ -1,11 +1,22 @@
-"""LSTM 超参数对比：W x H x L = {30, 60, 120} x {32, 64, 128} x {1, 2}，共 18 组。
+"""LSTM 超参数对比。
+
+- 基础网格（18 组）：W x H x L = {30, 60, 120} x {32, 64, 128} x {1, 2}，输出名 lstm_sweep
+- 扩展网格（4 组，--ext）：W x H x L = {180, 240} x {32, 128} x {1}，输出名 lstm_sweep_ext
 
 只用训练集训练、验证集选模型，完全不读测试集（读到测试文件会直接报错）。
 可以中断后继续：已经跑完的组合（runs/ 里有结果 JSON 且 models/ 里有权重）直接跳过。
 
+验证误差和早停只在"序列内行号 >= --eval-start"的点上计算（默认 239，即最长窗口 240
+能覆盖的点）。最初的 18 组是用 119 跑的；要在 lstm_sweep 目录里续跑那 18 组，
+必须加 --eval-start 119，否则会因为设置不一致而报错停止。
+
 用法（在仓库根目录）：
-    python src/sweep_lstm.py            # 完整 18 组
-    python src/sweep_lstm.py --smoke    # 只用 25 degC、2 组、每组 2 轮，检查代码能否跑通
+    python src/sweep_lstm.py --ext              # 扩展的 4 组（评估起点 239）
+    python src/sweep_lstm.py --ext --smoke      # 只用 25 degC、W180/W240 两组、每组 2 轮
+    python src/sweep_lstm.py --eval-start 119   # 最初的 18 组（与当初的设置完全一致）
+    python src/sweep_lstm.py --smoke            # 只用 25 degC、2 组、每组 2 轮
+
+合并 18 + 4 组的结果表见 src/combine_lstm_sweep.py。
 
 输出（默认 --name lstm_sweep）：
     results/lstm_sweep/sweep_results.csv     汇总表，按验证 RMSE 从小到大
@@ -47,6 +58,10 @@ ROOT = D.ROOT
 GRID_W = [30, 60, 120]
 GRID_H = [32, 64, 128]
 GRID_L = [1, 2]
+# 扩展网格：最佳配置落在 W=120 的边界上，补跑更长的窗口
+EXT_GRID_W = [180, 240]
+EXT_GRID_H = [32, 128]
+EXT_GRID_L = [1]
 
 SEED = 42
 LR = 1e-3
@@ -56,9 +71,12 @@ PATIENCE = 15
 EVAL_BATCH_SIZE = 2048  # 只影响评估时的显存占用，不影响结果
 
 DEFAULT_NAME = "lstm_sweep"
+EXT_NAME = "lstm_sweep_ext"
 SMOKE_NAME = "lstm_sweep_smoke"
+EXT_SMOKE_NAME = "lstm_sweep_ext_smoke"
 SMOKE_FOLDERS = ["25degC"]
 SMOKE_CONFIGS = [(30, 32, 1), (60, 64, 2)]
+EXT_SMOKE_CONFIGS = [(180, 32, 1), (240, 32, 1)]
 SMOKE_EPOCHS = 2
 
 COLOR_TRAIN = "#2a78d6"
@@ -126,7 +144,7 @@ def train_one(w, h, l, train_seqs, val_seqs, stats, settings, dirs, device, log)
     name = config_name(w, h, l)
     set_seed(SEED)
     train_ds = D.WindowDataset(train_seqs, stats, w, None, log).to(device)
-    val_ds = D.WindowDataset(val_seqs, stats, w, D.EVAL_START_INDEX, log).to(device)
+    val_ds = D.WindowDataset(val_seqs, stats, w, settings["eval_start_index"], log).to(device)
     y_val = val_ds.y[val_ds.ends]
     model = LSTMSOC(hidden_size=h, num_layers=l).to(device)
     n_params = count_parameters(model)
@@ -267,32 +285,46 @@ def write_summary(dirs, folders, log) -> pd.DataFrame | None:
 
 # ---------------------------------------------------------------------------
 def main() -> None:
-    p = argparse.ArgumentParser(description="LSTM 超参数对比（18 组）")
+    p = argparse.ArgumentParser(description="LSTM 超参数对比")
+    p.add_argument("--ext", action="store_true",
+                   help=f"跑扩展网格 W{EXT_GRID_W} x H{EXT_GRID_H} x L{EXT_GRID_L}，输出名 {EXT_NAME}")
     p.add_argument("--smoke", action="store_true",
                    help="快速检查：只用 25 degC、2 组、每组 2 轮，输出到 *_smoke 目录")
-    p.add_argument("--windows", nargs="+", type=int, default=GRID_W, help="只跑这些 W")
-    p.add_argument("--hidden", nargs="+", type=int, default=GRID_H, help="只跑这些 H")
-    p.add_argument("--layers", nargs="+", type=int, default=GRID_L, help="只跑这些 L")
+    p.add_argument("--windows", nargs="+", type=int, default=None, help="只跑这些 W")
+    p.add_argument("--hidden", nargs="+", type=int, default=None, help="只跑这些 H")
+    p.add_argument("--layers", nargs="+", type=int, default=None, help="只跑这些 L")
+    p.add_argument("--eval-start", type=int, default=D.EVAL_START_INDEX,
+                   help="验证误差和早停的评估起点（序列内行号），默认 "
+                        f"{D.EVAL_START_INDEX}；最初的 18 组用的是 {D.EVAL_START_INDEX_ORIGINAL}")
     p.add_argument("--max-epochs", type=int, default=None,
                    help="调试用：覆盖最大轮数（必须同时用 --name 指定另一个输出名）")
-    p.add_argument("--name", default=None, help=f"输出子目录名，默认 {DEFAULT_NAME}")
+    p.add_argument("--name", default=None,
+                   help=f"输出子目录名，默认 {DEFAULT_NAME}（--ext 时为 {EXT_NAME}）")
     p.add_argument("--device", choices=["auto", "cuda", "cpu"], default="auto")
     args = p.parse_args()
 
+    grid_w, grid_h, grid_l = (EXT_GRID_W, EXT_GRID_H, EXT_GRID_L) if args.ext else (GRID_W, GRID_H, GRID_L)
+    formal_name = EXT_NAME if args.ext else DEFAULT_NAME
     if args.smoke:
         folders, max_epochs = SMOKE_FOLDERS, SMOKE_EPOCHS
-        configs = SMOKE_CONFIGS
-        name = args.name or SMOKE_NAME
+        configs = EXT_SMOKE_CONFIGS if args.ext else SMOKE_CONFIGS
+        name = args.name or (EXT_SMOKE_NAME if args.ext else SMOKE_NAME)
     else:
         folders, max_epochs = list(D.TEMP_FOLDERS), args.max_epochs or MAX_EPOCHS
-        bad = [v for v in args.windows if v not in GRID_W] + \
-              [v for v in args.hidden if v not in GRID_H] + [v for v in args.layers if v not in GRID_L]
+        ws, hs, ls = args.windows or grid_w, args.hidden or grid_h, args.layers or grid_l
+        bad = [v for v in ws if v not in grid_w] + \
+              [v for v in hs if v not in grid_h] + [v for v in ls if v not in grid_l]
         if bad:
-            raise SystemExit(f"不在超参数网格里的取值：{bad}")
-        configs = [(w, h, l) for w in args.windows for h in args.hidden for l in args.layers]
-        name = args.name or DEFAULT_NAME
-    if name == DEFAULT_NAME and max_epochs != MAX_EPOCHS:
+            raise SystemExit(f"不在{'扩展' if args.ext else '基础'}网格里的取值：{bad}"
+                             + ("" if args.ext else "（W=180、240 要加 --ext）"))
+        configs = [(w, h, l) for w in ws for h in hs for l in ls]
+        name = args.name or formal_name
+    if name in (DEFAULT_NAME, EXT_NAME) and max_epochs != MAX_EPOCHS:
         raise SystemExit("改了 --max-epochs 时必须用 --name 换一个输出目录，以免和正式结果混在一起")
+    max_w = max(c[0] for c in configs)
+    if args.eval_start < max_w - 1:
+        raise SystemExit(f"--eval-start {args.eval_start} 小于最长窗口 {max_w} 的 {max_w - 1}，"
+                         "各窗口长度就不是在同一批点上比较了")
 
     dirs = {"results": ROOT / "results" / name, "runs": ROOT / "results" / name / "runs",
             "curves": ROOT / "results" / name / "curves", "models": ROOT / "models" / name}
@@ -302,7 +334,7 @@ def main() -> None:
 
     settings = {"folders": folders, "features": D.FEATURES, "target": D.TARGET,
                 "resample": "1 s, floor(time_s); V/I/T mean, soc last",
-                "eval_start_index": D.EVAL_START_INDEX, "seed": SEED, "lr": LR,
+                "eval_start_index": args.eval_start, "seed": SEED, "lr": LR,
                 "batch_size": BATCH_SIZE, "max_epochs": max_epochs, "patience": PATIENCE,
                 "optimizer": "Adam", "loss": "MSE", "dropout": 0.0}
 
@@ -315,6 +347,7 @@ def main() -> None:
         + (f"（{torch.cuda.get_device_name(device)}）" if device.type == "cuda" else
            f"（CPU 线程 {torch.get_num_threads()}）"))
     log(f"配置 {len(configs)} 组：{', '.join(config_name(*c) for c in configs)}")
+    log(f"验证误差和早停的评估起点：序列内第 {args.eval_start} 行及之后")
 
     # ---- 划分，并打开测试集保护 ----
     D.block_test_files()
@@ -346,6 +379,21 @@ def main() -> None:
     log("标准化参数（训练集）：" + "，".join(
         f"{f} mean={m:.4f} std={s:.4f}" for f, m, s in zip(D.FEATURES, stats["mean"], stats["std"])))
 
+    # ---- 开始训练前，先确认这个目录里已有的结果都是用同样的设置跑的 ----
+    for run_json in sorted(dirs["runs"].glob("W*_H*_L*.json")):
+        with open(run_json, "r", encoding="utf-8") as f:
+            done_settings = json.load(f)["settings"]
+        if done_settings != settings:
+            diff = {k: (done_settings.get(k), settings.get(k))
+                    for k in set(done_settings) | set(settings)
+                    if done_settings.get(k) != settings.get(k)}
+            hint = ""
+            if set(diff) == {"eval_start_index"}:
+                hint = (f"。{name} 里已有的结果是用 --eval-start {done_settings['eval_start_index']} "
+                        "跑的，续跑请加上这个参数")
+            raise SystemExit(f"{run_json.relative_to(ROOT).as_posix()} 是用不同设置跑的"
+                             f"（已有 vs 本次：{diff}）{hint}")
+
     # ---- 逐组训练，已完成的跳过 ----
     for i, (w, h, l) in enumerate(configs, 1):
         cname = config_name(w, h, l)
@@ -353,8 +401,6 @@ def main() -> None:
         if run_json.exists() and (dirs["models"] / f"{cname}.pt").exists():
             with open(run_json, "r", encoding="utf-8") as f:
                 done = json.load(f)
-            if done["settings"] != settings:
-                raise SystemExit(f"{run_json} 是用不同设置跑的，请删除它（和对应权重）后重跑")
             log(f"[{i}/{len(configs)}] {cname} 已完成（验证 RMSE {done['val_rmse_pct']:.3f}%），跳过")
             continue
         log(f"[{i}/{len(configs)}] {cname} 开始训练")

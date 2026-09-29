@@ -1,10 +1,13 @@
 """在测试集上评估选定的一组 LSTM 配置。
 
-超参数对比阶段不要运行本脚本。等根据 results/lstm_sweep/sweep_results.csv（只看验证集）
+超参数对比阶段不要运行本脚本。等根据 results/lstm_sweep_ext/sweep_results_22.csv（只看验证集）
 选定配置之后，再手动运行一次，例如：
-    python src/evaluate_lstm.py --window 60 --hidden 64 --layers 2
+    python src/evaluate_lstm.py --window 240 --hidden 128 --layers 1
 
-输出到 results/<name>/test_eval/<配置>/：
+权重会自动在 models/lstm_sweep_ext/ 和 models/lstm_sweep/ 里找（也可以用 --name 指定）。
+默认只评估序列内行号 >= 239 的点（与扩展后的验证集一致），可用 --eval-start 修改。
+
+输出到 results/<name>/test_eval/<配置>_start<评估起点>/：
     rmse_table.csv / mae_table.csv   温度 x 工况的 RMSE / MAE（SOC 百分点）
     per_file_metrics.csv             每个测试文件的指标
     summary.json                     全部测试点合在一起的 RMSE / MAE，以及评估设置
@@ -27,8 +30,8 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import lstm_data as D  # noqa: E402
 from lstm_model import LSTMSOC  # noqa: E402
-from sweep_lstm import (COLOR_TRAIN, COLOR_VAL, DEFAULT_NAME, config_name,  # noqa: E402
-                        metrics_pct, pick_device, predict)
+from sweep_lstm import (COLOR_TRAIN, COLOR_VAL, DEFAULT_NAME, EXT_NAME,  # noqa: E402
+                        config_name, metrics_pct, pick_device, predict)
 
 import matplotlib  # noqa: E402
 matplotlib.use("Agg")
@@ -65,16 +68,22 @@ def main() -> None:
     p.add_argument("--window", type=int, required=True)
     p.add_argument("--hidden", type=int, required=True)
     p.add_argument("--layers", type=int, required=True)
-    p.add_argument("--name", default=DEFAULT_NAME, help="对比实验的输出名（models/<name>/）")
+    p.add_argument("--name", default=None,
+                   help=f"对比实验的输出名（models/<name>/）；默认依次在 {EXT_NAME}、{DEFAULT_NAME} 里找")
     p.add_argument("--eval-start", type=int, default=D.EVAL_START_INDEX,
-                   help="只评估序列内行号 >= 该值的点（默认与验证集相同，119）")
+                   help=f"只评估序列内行号 >= 该值的点（默认 {D.EVAL_START_INDEX}，与扩展后的验证集相同）")
     p.add_argument("--device", choices=["auto", "cuda", "cpu"], default="auto")
     args = p.parse_args()
 
     cname = config_name(args.window, args.hidden, args.layers)
+    names = [args.name] if args.name else [EXT_NAME, DEFAULT_NAME]
+    found = [n for n in names if (ROOT / "models" / n / f"{cname}.pt").exists()]
+    if not found:
+        raise SystemExit(f"在 models/{{{','.join(names)}}}/ 里找不到 {cname}.pt，请先用 sweep_lstm.py 训练这一组")
+    if len(found) > 1:
+        raise SystemExit(f"{cname}.pt 同时存在于 {found}，请用 --name 指定用哪一个")
+    args.name = found[0]
     ckpt_path = ROOT / "models" / args.name / f"{cname}.pt"
-    if not ckpt_path.exists():
-        raise SystemExit(f"找不到权重 {ckpt_path.relative_to(ROOT)}，请先用 sweep_lstm.py 训练这一组")
     device = pick_device(args.device)
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
     cfg, stats, settings = ckpt["config"], ckpt["norm_stats"], ckpt["settings"]
@@ -93,13 +102,15 @@ def main() -> None:
     window = cfg["window"]
     eval_start = max(args.eval_start, window - 1)
 
-    out = ROOT / "results" / args.name / "test_eval" / cname
+    # 目录名带上评估起点，换起点重评时不会覆盖之前的结果
+    out = ROOT / "results" / args.name / "test_eval" / f"{cname}_start{eval_start}"
     (out / "plots").mkdir(parents=True, exist_ok=True)
     (out / "predictions").mkdir(parents=True, exist_ok=True)
 
     folders = settings["folders"]
     splits = D.build_splits(folders)
-    print(f"配置 {cname}（最佳轮 {ckpt['best_epoch']}，验证 RMSE {ckpt['val_rmse_pct']:.3f}%），"
+    print(f"配置 {cname}（{args.name}，最佳轮 {ckpt['best_epoch']}，训练时的验证 RMSE "
+          f"{ckpt['val_rmse_pct']:.3f}%，评估起点 {settings['eval_start_index']}），"
           f"设备 {device}，评估行号 >= {eval_start}")
     print(f"读取测试集 {len(splits['test'])} 个文件 ...")
     test_seqs = D.load_sequences(splits["test"])
@@ -157,6 +168,7 @@ def main() -> None:
     e = np.concatenate(all_err)
     summary = {"config": cname, "model_file": ckpt_path.relative_to(ROOT).as_posix(),
                "best_epoch": ckpt["best_epoch"], "val_rmse_pct": ckpt["val_rmse_pct"],
+               "val_eval_start_index": settings["eval_start_index"],
                "test_rmse_pct": float(np.sqrt(np.mean(e ** 2))),
                "test_mae_pct": float(np.mean(np.abs(e))),
                "n_test_points": int(len(e)), "n_test_files": len(per_file),
