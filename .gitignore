@@ -1,4 +1,4 @@
-archive/
+/archive/
 data/processed/kollmeyer_clean/_excluded/
 __pycache__/
 .ipynb_checkpoints/
