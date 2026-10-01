@@ -140,20 +140,20 @@ def metrics_pct(pred: np.ndarray, y: np.ndarray) -> tuple[float, float]:
 
 
 # ---------------------------------------------------------------------------
-def train_one(w, h, l, train_seqs, val_seqs, stats, settings, dirs, device, log) -> dict:
-    name = config_name(w, h, l)
-    set_seed(SEED)
-    train_ds = D.WindowDataset(train_seqs, stats, w, None, log).to(device)
-    val_ds = D.WindowDataset(val_seqs, stats, w, settings["eval_start_index"], log).to(device)
-    y_val = val_ds.y[val_ds.ends]
-    model = LSTMSOC(hidden_size=h, num_layers=l).to(device)
-    n_params = count_parameters(model)
-    opt = torch.optim.Adam(model.parameters(), lr=LR)
-    loss_fn = torch.nn.MSELoss()
-    gen = torch.Generator().manual_seed(SEED)  # 每轮打乱训练窗口顺序
-    log(f"  训练窗口 {len(train_ds):,}，验证点 {len(val_ds):,}，参数量 {n_params:,}")
+def fit(model: torch.nn.Module, train_ds: D.WindowDataset, val_ds: D.WindowDataset, name: str,
+        max_epochs: int, device, log, seed: int = SEED, lr: float = LR,
+        batch_size: int = BATCH_SIZE, patience: int = PATIENCE) -> dict:
+    """通用训练循环（任意 (batch, W, 3) -> (batch,) 的模型）。
 
-    max_epochs = settings["max_epochs"]
+    Adam + MSE，每轮打乱训练窗口（打乱用独立的 Generator(seed)），每轮结束算一次验证 loss，
+    验证 loss 连续 patience 轮没有创新低就停止。早停只看 val_ds，不接触测试集。
+    返回时 model 已载入验证 loss 最低那一轮的权重。
+    """
+    y_val = val_ds.y[val_ds.ends]
+    opt = torch.optim.Adam(model.parameters(), lr=lr)
+    loss_fn = torch.nn.MSELoss()
+    gen = torch.Generator().manual_seed(seed)  # 每轮打乱训练窗口顺序
+
     best_loss, best_epoch, best_state, bad = math.inf, 0, None, 0
     history = []
     t0 = time.perf_counter()
@@ -161,7 +161,7 @@ def train_one(w, h, l, train_seqs, val_seqs, stats, settings, dirs, device, log)
         te = time.perf_counter()
         model.train()
         loss_sum = torch.zeros((), device=device, dtype=torch.float64)
-        for xb, yb in train_ds.iter_batches(BATCH_SIZE, shuffle=True, generator=gen):
+        for xb, yb in train_ds.iter_batches(batch_size, shuffle=True, generator=gen):
             opt.zero_grad(set_to_none=True)
             loss = loss_fn(model(xb), yb)
             loss.backward()
@@ -181,17 +181,21 @@ def train_one(w, h, l, train_seqs, val_seqs, stats, settings, dirs, device, log)
                         "val_rmse_pct": math.sqrt(val_loss) * 100, "epoch_time_s": epoch_time})
         log(f"  [{name}] epoch {epoch:3d}  train {train_loss:.3e}  val {val_loss:.3e}  "
             f"val RMSE {math.sqrt(val_loss) * 100:6.3f}%  {epoch_time:6.1f}s"
-            + ("  *" if improved else f"  ({bad}/{PATIENCE})"))
-        if bad >= PATIENCE:
-            log(f"  [{name}] 验证 loss 连续 {PATIENCE} 轮没有创新低，停止")
+            + ("  *" if improved else f"  ({bad}/{patience})"))
+        if bad >= patience:
+            log(f"  [{name}] 验证 loss 连续 {patience} 轮没有创新低，停止")
             break
     train_time = time.perf_counter() - t0
-    epochs_trained = len(history)
 
-    # 用最佳一轮的权重计算验证指标
     model.load_state_dict(best_state)
+    return {"best_state": best_state, "best_epoch": best_epoch, "best_loss": best_loss,
+            "history": history, "train_time": train_time}
+
+
+def val_metrics(model: torch.nn.Module, val_ds: D.WindowDataset) -> tuple[float, float, dict]:
+    """验证集整体 RMSE、MAE（SOC 百分点）和按温度分开的指标。"""
     pred = predict(model, val_ds).cpu().numpy()
-    y = y_val.cpu().numpy()
+    y = val_ds.y[val_ds.ends].cpu().numpy()
     rmse, mae = metrics_pct(pred, y)
     per_temp = {}
     for folder in D.TEMP_FOLDERS:
@@ -199,6 +203,26 @@ def train_one(w, h, l, train_seqs, val_seqs, stats, settings, dirs, device, log)
         if mask.any():
             r, m = metrics_pct(pred[mask], y[mask])
             per_temp[folder] = {"rmse_pct": r, "mae_pct": m, "n_points": int(mask.sum())}
+    return rmse, mae, per_temp
+
+
+def train_one(w, h, l, train_seqs, val_seqs, stats, settings, dirs, device, log) -> dict:
+    name = config_name(w, h, l)
+    set_seed(SEED)
+    train_ds = D.WindowDataset(train_seqs, stats, w, None, log).to(device)
+    val_ds = D.WindowDataset(val_seqs, stats, w, settings["eval_start_index"], log).to(device)
+    model = LSTMSOC(hidden_size=h, num_layers=l).to(device)
+    n_params = count_parameters(model)
+    log(f"  训练窗口 {len(train_ds):,}，验证点 {len(val_ds):,}，参数量 {n_params:,}")
+
+    max_epochs = settings["max_epochs"]
+    fitted = fit(model, train_ds, val_ds, name, max_epochs, device, log)
+    best_state, best_epoch, best_loss = fitted["best_state"], fitted["best_epoch"], fitted["best_loss"]
+    history, train_time = fitted["history"], fitted["train_time"]
+    epochs_trained = len(history)
+
+    # 用最佳一轮的权重计算验证指标（fit 返回时已载入最佳权重）
+    rmse, mae, per_temp = val_metrics(model, val_ds)
 
     # 保存权重（附带重建模型和评估所需的全部信息）
     ckpt_path = dirs["models"] / f"{name}.pt"

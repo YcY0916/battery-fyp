@@ -42,6 +42,8 @@ assert not FORBIDDEN_INPUTS & set(FEATURES), "ah 不能作为输入"
 
 # 6 个温度文件夹，按温度从低到高
 TEMP_FOLDERS = ["n20degC", "n10degC", "0degC", "10degC", "25degC", "40degC"]
+# Nominal temperature (degC) -> folder name, used by the --temps command-line options
+TEMP_C_TO_FOLDER = {-20: "n20degC", -10: "n10degC", 0: "0degC", 10: "10degC", 25: "25degC", 40: "40degC"}
 DRIVE_CYCLES = ["UDDS", "HWFET", "LA92", "US06"]
 
 # 与任务说明逐一核对用：每个温度编号最大的 Mixed 文件
@@ -62,6 +64,34 @@ MISSING_DRIVE = {("25degC", "HWFET")}
 # sweep_lstm.py / evaluate_lstm.py 都可以用 --eval-start 另外指定。
 EVAL_START_INDEX = 239
 EVAL_START_INDEX_ORIGINAL = 119  # 最初 18 组训练时（早停）用的评估起点
+
+
+def set_data_root(data_root: Path | str) -> None:
+    """Read data from <data_root>/data/processed/kollmeyer_clean (default: the repository copy).
+
+    Must be called before block_test_files() / build_splits().
+    """
+    global DATA_DIR, MANIFEST_PATH
+    DATA_DIR = Path(data_root).resolve() / "data" / "processed" / "kollmeyer_clean"
+    MANIFEST_PATH = DATA_DIR / "manifest.json"
+    if not MANIFEST_PATH.exists():
+        raise FileNotFoundError(f"manifest.json not found: {MANIFEST_PATH} (check --data_root)")
+
+
+def folders_for_temps(temps: list[int]) -> list[str]:
+    """Nominal temperatures in degC (e.g. [0, 10, 25, 40]) -> folder names, from cold to hot."""
+    unknown = sorted(set(temps) - set(TEMP_C_TO_FOLDER))
+    if unknown:
+        raise ValueError(f"Unknown temperatures {unknown}; available: {sorted(TEMP_C_TO_FOLDER)}")
+    wanted = {TEMP_C_TO_FOLDER[t] for t in temps}
+    return [f for f in TEMP_FOLDERS if f in wanted]
+
+
+def _rel(path: Path) -> str:
+    try:
+        return path.resolve().relative_to(DATA_DIR.resolve()).as_posix()
+    except ValueError:
+        return str(path)
 
 
 class TestSetAccessError(RuntimeError):
@@ -93,7 +123,7 @@ def block_test_files() -> None:
 def _check_not_test(path: Path) -> None:
     if _TEST_GUARD_ON and path.resolve() in _TEST_PATHS:
         raise TestSetAccessError(
-            f"对比阶段禁止读取测试文件：{path.relative_to(ROOT)}。"
+            f"对比阶段禁止读取测试文件：{_rel(path)}。"
             "测试集只能由 src/evaluate_lstm.py 在选定配置之后读取。"
         )
 
@@ -398,17 +428,49 @@ def _print_split_summary(folders, windows, eval_start):
                 print(f"  W={w} 跳过（比窗口短）：{ds.skipped}")
         print(f"{'合计':32s}{'':>6s}{sum(len(s) for s in seqs[split]):>10,d}"
               + "".join(f"{t:>10,d}" for t in totals))
+        print(f"  windows per temperature ({split}):")
+        for folder in folders or TEMP_FOLDERS:
+            part = [s for s in seqs[split] if s.info.folder == folder]
+            if not part:
+                continue
+            counts = []
+            for w in windows:
+                min_end = None if split == "train" else eval_start
+                ds = WindowDataset(part, stats, w, min_end, log=lambda *_: None)
+                counts.append(len(ds))
+            print(f"  {folder:30s}{len(part):>6d}{sum(len(s) for s in part):>10,d}"
+                  + "".join(f"{c:>10,d}" for c in counts))
     print("\n说明：训练集窗口终点为每条序列的第 W-1 行起；验证/测试集窗口终点为第 "
           f"{eval_start} 行起（W <= {eval_start + 1} 时各 W 相同）。")
     ids = [{s.id for s in v} for v in splits.values()]
     print("三个集合两两无重叠：", not (ids[0] & ids[1] or ids[0] & ids[2] or ids[1] & ids[2]))
+    raw = [{(s.folder, s.id.split("/")[1].split("_part")[0]) for s in v} for v in splits.values()]
+    print("No overlap between the original files (parts follow their file):",
+          not (raw[0] & raw[1] or raw[0] & raw[2] or raw[1] & raw[2]))
 
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="打印训练/验证/测试集的文件清单和窗口数")
     p.add_argument("--folders", nargs="+", default=None, help="只看这些温度文件夹")
+    p.add_argument("--temps", nargs="+", type=int, default=None,
+                   help="nominal temperatures in degC (e.g. 0 10 25 40); overrides --folders")
+    p.add_argument("--paper", action="store_true",
+                   help="paper setting: temps 0 10 25 40, windows 60-300, evaluation start 299")
+    p.add_argument("--smoke", action="store_true", help="only 25 degC (quick check)")
+    p.add_argument("--data_root", type=Path, default=None,
+                   help="folder that contains data/processed/kollmeyer_clean (default: repository root)")
     p.add_argument("--windows", nargs="+", type=int, default=[30, 60, 120, 180, 240])
     p.add_argument("--eval-start", type=int, default=EVAL_START_INDEX,
                    help=f"验证/测试集的评估起点（行号），默认 {EVAL_START_INDEX}")
     a = p.parse_args()
+    if a.data_root is not None:
+        set_data_root(a.data_root)
+    if a.paper:
+        import paper_common as PC  # local import: paper_common imports this module
+        a.temps = a.temps or list(PC.DEFAULT_TEMPS)
+        a.windows, a.eval_start = sorted({c[0] for c in PC.SWEEP_CONFIGS}), PC.EVAL_START
+    if a.smoke:
+        a.temps = [25]
+    if a.temps is not None:
+        a.folders = folders_for_temps(a.temps)
     _print_split_summary(a.folders, a.windows, a.eval_start)
