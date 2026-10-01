@@ -1,4 +1,4 @@
-"""LSTM SOC 估计模型：LSTM -> 取最后一个时间步的输出 -> Linear(H, 1)。"""
+"""LSTM SOC estimator: LSTM -> output of the last time step -> Linear(H, 1)."""
 
 from __future__ import annotations
 
