@@ -197,18 +197,51 @@ python src\sweep_paper.py --timing
 - 打印两种估计：最坏情况（每组 200 轮）和典型情况（旧 sweep 结果里实际训练轮数的平均值；在 `results\lstm_sweep*\runs\` 或 `archive\2026-09_6temp\` 下自动查找，找不到就要用 `--epochs N` 手动给出）。
 - 每台电脑的结果存为 `results\paper_0to40\timing\timing_<主机名>.json`。把 Colab 的那个文件拷到笔记本的同一目录，再在笔记本上跑一次 `--timing`，就会打印两台电脑的最佳 `--shard` 分配（让两台大约同时跑完）。
 
-（预计运行时间：计时完成后补充。）
+#### 预计运行时间（粗略）
+
+**实测（开发用的云端容器，4 核 Intel Xeon 2.1 GHz，没有 GPU）**：W300_H128_L1 完整训练一轮（145,686 个训练窗口，570 个 batch，外加一次验证）用了 **962 s**。按每组几个 step 换算的每轮时间（CPU）：
+
+| W \ H（L = 1） | 32 | 64 | 128 |
+|---|---|---|---|
+| 60 | 3 s | 7 s | 18 s |
+| 120 | 8 s | 17 s | 39 s |
+| 180 | 22 s | 84 s | 269 s |
+| 240 | 65 s | 195 s | 664 s |
+| 300 | 88 s | 278 s | 962 s |
+| 240（L = 2） | 170 s | 581 s | 1995 s |
+
+CPU 上第 2 步最坏情况（每组 200 轮）要 300 多小时，完全不可行；而且 CPU 上用时随 W、H 增长得比线性快得多，不能拿来按比例推算 GPU。
+
+**GPU（RTX 4050 / T4）只能粗估**，下面是按 cuDNN LSTM 的一般规律做的假设，不是实测：RTX 4050 上 W = 300、H = 32、L = 1 每轮约 8 s，用时与 W 成正比，H = 64 / 128 分别约 ×1.1 / ×1.3，L = 2 约 ×1.9；T4 比 RTX 4050 慢约 1.6 倍。第 3 步的候选还不知道，暂按"W = 240 的 3 个 L = 1 配置 + 2 个 L = 2 配置，每个 4 个新 seed"估计。
+
+| | RTX 4050 单独跑 | T4 单独跑 |
+|---|---|---|
+| 第 2 步，最坏（每组 200 轮） | 约 7 h | 约 11 h |
+| 第 2 步，典型（每组约 80 轮，假设） | 约 3 h | 约 4.5 h |
+| 第 3 步，最坏 | 约 10.5 h | 约 17 h |
+| 第 3 步，典型 | 约 4 h | 约 7 h |
+
+两台一起跑、按下面的分配，第 2 + 3 步大约各需 4.3 h（典型）到 10.7 h（最坏）。典型轮数是假设的 80 轮；在笔记本上跑 `--timing` 会自动读取旧实验各组实际训练轮数的平均值来代替。
+
+**分配建议**：
+
+1. 先在两台电脑上各跑一次 `--timing`（GPU 上只要几分钟），把 Colab 的 `timing_<主机名>.json` 拷到笔记本的 `results\paper_0to40\timing\`，再在笔记本上跑一次 `--timing`，它会打印让两台同时跑完的 `--shard` 分配。以它为准。
+2. 如果不想先计时，按上面的假设算出的分配是（4050 比 T4 快，所以多分一些）：
+   - 笔记本：`--shard 1,3,5,6/6`（W60 × 3、W120 × 3、W180_H128、W240_H64、W240_H128、W300_H128、W240_H64_L2、W240_H128_L2，共 12 组）
+   - Colab：`--shard 2,4/6`（W180_H32、W180_H64、W240_H32、W300_H32、W300_H64、W240_H32_L2，共 6 组）
+3. 简单地 `--shard 1/2` 和 `--shard 2/2` 也可以：按 GPU 用时两边大约各一半，但笔记本会先跑完、闲着等 Colab。
+4. **第 3 步必须用和第 2 步完全相同的 `--shard` 写法**，这样每个配置的 5 个 seed 都在同一台电脑上。
 
 ### 第 2 步：超参数对比（两台电脑同时跑）
 
-按上面的分配，例如两台各一半：
+按上面的分配（下面用的是不计时时的默认分配；如果 `--timing` 给出了别的分配，就换成它给的 `--shard`）：
 
 ```bat
-python src\sweep_paper.py --shard 1/2
+python src\sweep_paper.py --shard 1,3,5,6/6
 ```
 
 ```python
-!python src/sweep_paper.py --shard 2/2 --out_root {OUT}
+!python src/sweep_paper.py --shard 2,4/6 --out_root {OUT}
 ```
 
 - 配置按配置名的 sha256 分到各个 shard，同一个配置在第 2 步和第 3 步总在同一台电脑上。`--shard 1,3/4` 这种写法表示一台电脑跑多个 shard。
@@ -234,11 +267,11 @@ python src\sweep_paper.py --shard 1/2
 ### 第 3 步：多 seed 实验（两台电脑同时跑，shard 写法与第 2 步相同）
 
 ```bat
-python src\sweep_paper.py --stage multiseed --shard 1/2
+python src\sweep_paper.py --stage multiseed --shard 1,3,5,6/6
 ```
 
 ```python
-!python src/sweep_paper.py --stage multiseed --shard 2/2 --out_root {OUT}
+!python src/sweep_paper.py --stage multiseed --shard 2,4/6 --out_root {OUT}
 ```
 
 - 每个候选跑 seed 43–46；seed 42 直接用第 2 步的结果，不会重新训练。
