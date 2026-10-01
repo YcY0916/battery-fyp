@@ -3,7 +3,7 @@ data/processed/kollmeyer_clean/_excluded/
 __pycache__/
 .ipynb_checkpoints/
 *.pt
-# LSTM 对比实验：smoke / 调试输出不提交
+# Smoke / debugging outputs are not committed
 results/*_smoke/
 models/*_smoke/
 results/timing_*/

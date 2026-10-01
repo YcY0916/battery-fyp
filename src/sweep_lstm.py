@@ -1,31 +1,36 @@
-"""LSTM 超参数对比。
+"""LSTM hyperparameter sweep of the old 6-temperature experiment.
 
-- 基础网格（18 组）：W x H x L = {30, 60, 120} x {32, 64, 128} x {1, 2}，输出名 lstm_sweep
-- 扩展网格（4 组，--ext）：W x H x L = {180, 240} x {32, 128} x {1}，输出名 lstm_sweep_ext
+- Base grid (18 configs): W x H x L = {30, 60, 120} x {32, 64, 128} x {1, 2}, output name lstm_sweep
+- Extended grid (4 configs, --ext): W x H x L = {180, 240} x {32, 128} x {1}, output name lstm_sweep_ext
 
-只用训练集训练、验证集选模型，完全不读测试集（读到测试文件会直接报错）。
-可以中断后继续：已经跑完的组合（runs/ 里有结果 JSON 且 models/ 里有权重）直接跳过。
+Trains on the training set and selects on the validation set only; the test set is never read
+(reading a test file raises an error).
+Resumable: finished configs (result JSON in runs/ and weights in models/) are skipped.
 
-验证误差和早停只在"序列内行号 >= --eval-start"的点上计算（默认 239，即最长窗口 240
-能覆盖的点）。最初的 18 组是用 119 跑的；要在 lstm_sweep 目录里续跑那 18 组，
-必须加 --eval-start 119，否则会因为设置不一致而报错停止。
+Validation error and early stopping only use points with in-sequence index >= --eval-start
+(default 239, the first point the longest window 240 can cover). The original 18 configs were
+run with 119; to resume those 18 in the lstm_sweep folder you must pass --eval-start 119,
+otherwise the script stops because the settings differ.
 
-用法（在仓库根目录）：
-    python src/sweep_lstm.py --ext              # 扩展的 4 组（评估起点 239）
-    python src/sweep_lstm.py --ext --smoke      # 只用 25 degC、W180/W240 两组、每组 2 轮
-    python src/sweep_lstm.py --eval-start 119   # 最初的 18 组（与当初的设置完全一致）
-    python src/sweep_lstm.py --smoke            # 只用 25 degC、2 组、每组 2 轮
+fit() and val_metrics() are also the training loop and validation metrics of the 0-40 degC
+paper pipeline (src/sweep_paper.py).
 
-合并 18 + 4 组的结果表见 src/combine_lstm_sweep.py。
+Usage (from the repository root):
+    python src/sweep_lstm.py --ext              # the 4 extended configs (evaluation start 239)
+    python src/sweep_lstm.py --ext --smoke      # 25 degC only, W180/W240, 2 epochs each
+    python src/sweep_lstm.py --eval-start 119   # the original 18 configs (same settings as back then)
+    python src/sweep_lstm.py --smoke            # 25 degC only, 2 configs, 2 epochs each
 
-输出（默认 --name lstm_sweep）：
-    results/lstm_sweep/sweep_results.csv     汇总表，按验证 RMSE 从小到大
-    results/lstm_sweep/norm_stats.json       标准化参数（只用训练集计算）
-    results/lstm_sweep/sweep_log.txt         运行日志
-    results/lstm_sweep/runs/<配置>.json       每组的完整结果（也是"已完成"的标记）
-    results/lstm_sweep/runs/<配置>_history.csv 每轮的 loss
-    results/lstm_sweep/curves/<配置>.png      训练曲线
-    models/lstm_sweep/<配置>.pt              验证 loss 最低那一轮的权重
+The merged 18 + 4 table was made by src/archive/combine_lstm_sweep.py (archived).
+
+Outputs (default --name lstm_sweep):
+    results/lstm_sweep/sweep_results.csv         summary, sorted by validation RMSE
+    results/lstm_sweep/norm_stats.json           normalisation stats (training set only)
+    results/lstm_sweep/sweep_log.txt             run log
+    results/lstm_sweep/runs/<config>.json        full result of each config (also the "finished" marker)
+    results/lstm_sweep/runs/<config>_history.csv loss of every epoch
+    results/lstm_sweep/curves/<config>.png       training curves
+    models/lstm_sweep/<config>.pt                weights of the epoch with the lowest validation loss
 """
 
 from __future__ import annotations
@@ -58,7 +63,7 @@ ROOT = D.ROOT
 GRID_W = [30, 60, 120]
 GRID_H = [32, 64, 128]
 GRID_L = [1, 2]
-# 扩展网格：最佳配置落在 W=120 的边界上，补跑更长的窗口
+# Extended grid: the best config was at the W=120 edge, so longer windows were added
 EXT_GRID_W = [180, 240]
 EXT_GRID_H = [32, 128]
 EXT_GRID_L = [1]
@@ -68,7 +73,7 @@ LR = 1e-3
 BATCH_SIZE = 256
 MAX_EPOCHS = 200
 PATIENCE = 15
-EVAL_BATCH_SIZE = 2048  # 只影响评估时的显存占用，不影响结果
+EVAL_BATCH_SIZE = 2048  # only affects memory use during evaluation, not the results
 
 DEFAULT_NAME = "lstm_sweep"
 EXT_NAME = "lstm_sweep_ext"
@@ -85,7 +90,7 @@ COLOR_VAL = "#eb6834"
 
 # ---------------------------------------------------------------------------
 class Logger:
-    """同时输出到屏幕和日志文件。"""
+    """Print to the screen and append to a log file."""
 
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -115,12 +120,12 @@ def pick_device(arg: str) -> torch.device:
     if arg == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if arg == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("指定了 --device cuda，但 torch.cuda.is_available() 为 False")
+        raise RuntimeError("--device cuda was given, but torch.cuda.is_available() is False")
     return torch.device(arg)
 
 
 def write_json(path: Path, obj) -> None:
-    """先写临时文件再改名，中断时不会留下半个文件。"""
+    """Write a temporary file, then rename it, so an interruption never leaves half a file."""
     tmp = path.with_suffix(path.suffix + ".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(obj, f, indent=2, ensure_ascii=False)
@@ -134,7 +139,7 @@ def predict(model: torch.nn.Module, ds: D.WindowDataset) -> torch.Tensor:
 
 
 def metrics_pct(pred: np.ndarray, y: np.ndarray) -> tuple[float, float]:
-    """RMSE、MAE，单位为 SOC 百分点（误差 x 100）。"""
+    """RMSE and MAE in SOC percentage points (error x 100)."""
     err = (pred.astype(np.float64) - y.astype(np.float64)) * 100.0
     return float(np.sqrt(np.mean(err ** 2))), float(np.mean(np.abs(err)))
 
@@ -143,16 +148,17 @@ def metrics_pct(pred: np.ndarray, y: np.ndarray) -> tuple[float, float]:
 def fit(model: torch.nn.Module, train_ds: D.WindowDataset, val_ds: D.WindowDataset, name: str,
         max_epochs: int, device, log, seed: int = SEED, lr: float = LR,
         batch_size: int = BATCH_SIZE, patience: int = PATIENCE) -> dict:
-    """通用训练循环（任意 (batch, W, 3) -> (batch,) 的模型）。
+    """Generic training loop (any model mapping (batch, W, 3) -> (batch,)).
 
-    Adam + MSE，每轮打乱训练窗口（打乱用独立的 Generator(seed)），每轮结束算一次验证 loss，
-    验证 loss 连续 patience 轮没有创新低就停止。早停只看 val_ds，不接触测试集。
-    返回时 model 已载入验证 loss 最低那一轮的权重。
+    Adam + MSE; the training windows are shuffled every epoch (with a separate Generator(seed)).
+    The validation loss is computed after every epoch; training stops when it has not reached a
+    new minimum for `patience` epochs. Early stopping only looks at val_ds, never at the test set.
+    On return the model holds the weights of the epoch with the lowest validation loss.
     """
     y_val = val_ds.y[val_ds.ends]
     opt = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = torch.nn.MSELoss()
-    gen = torch.Generator().manual_seed(seed)  # 每轮打乱训练窗口顺序
+    gen = torch.Generator().manual_seed(seed)  # shuffles the training windows every epoch
 
     best_loss, best_epoch, best_state, bad = math.inf, 0, None, 0
     history = []
@@ -183,7 +189,7 @@ def fit(model: torch.nn.Module, train_ds: D.WindowDataset, val_ds: D.WindowDatas
             f"val RMSE {math.sqrt(val_loss) * 100:6.3f}%  {epoch_time:6.1f}s"
             + ("  *" if improved else f"  ({bad}/{patience})"))
         if bad >= patience:
-            log(f"  [{name}] 验证 loss 连续 {patience} 轮没有创新低，停止")
+            log(f"  [{name}] no new best validation loss for {patience} epochs, stopping")
             break
     train_time = time.perf_counter() - t0
 
@@ -193,7 +199,7 @@ def fit(model: torch.nn.Module, train_ds: D.WindowDataset, val_ds: D.WindowDatas
 
 
 def val_metrics(model: torch.nn.Module, val_ds: D.WindowDataset) -> tuple[float, float, dict]:
-    """验证集整体 RMSE、MAE（SOC 百分点）和按温度分开的指标。"""
+    """Validation RMSE and MAE (SOC percentage points), overall and per temperature."""
     pred = predict(model, val_ds).cpu().numpy()
     y = val_ds.y[val_ds.ends].cpu().numpy()
     rmse, mae = metrics_pct(pred, y)
@@ -213,7 +219,7 @@ def train_one(w, h, l, train_seqs, val_seqs, stats, settings, dirs, device, log)
     val_ds = D.WindowDataset(val_seqs, stats, w, settings["eval_start_index"], log).to(device)
     model = LSTMSOC(hidden_size=h, num_layers=l).to(device)
     n_params = count_parameters(model)
-    log(f"  训练窗口 {len(train_ds):,}，验证点 {len(val_ds):,}，参数量 {n_params:,}")
+    log(f"  train windows {len(train_ds):,}, validation points {len(val_ds):,}, parameters {n_params:,}")
 
     max_epochs = settings["max_epochs"]
     fitted = fit(model, train_ds, val_ds, name, max_epochs, device, log)
@@ -221,10 +227,10 @@ def train_one(w, h, l, train_seqs, val_seqs, stats, settings, dirs, device, log)
     history, train_time = fitted["history"], fitted["train_time"]
     epochs_trained = len(history)
 
-    # 用最佳一轮的权重计算验证指标（fit 返回时已载入最佳权重）
+    # Validation metrics with the best-epoch weights (fit returns with them loaded)
     rmse, mae, per_temp = val_metrics(model, val_ds)
 
-    # 保存权重（附带重建模型和评估所需的全部信息）
+    # Save the weights with everything needed to rebuild and evaluate the model
     ckpt_path = dirs["models"] / f"{name}.pt"
     tmp = ckpt_path.with_suffix(".pt.tmp")
     torch.save({"state_dict": best_state,
@@ -254,10 +260,10 @@ def train_one(w, h, l, train_seqs, val_seqs, stats, settings, dirs, device, log)
         "model_file": ckpt_path.relative_to(ROOT).as_posix(),
         "settings": settings,
     }
-    # 结果 JSON 最后写：它存在就表示这一组已经完整跑完
+    # The result JSON is written last: if it exists, this config has finished
     write_json(dirs["runs"] / f"{name}.json", result)
-    log(f"  [{name}] 完成：最佳轮 {best_epoch}/{epochs_trained}，验证 RMSE {rmse:.3f}%，"
-        f"MAE {mae:.3f}%，用时 {train_time / 60:.1f} min")
+    log(f"  [{name}] done: best epoch {best_epoch}/{epochs_trained}, val RMSE {rmse:.3f}%, "
+        f"MAE {mae:.3f}%, {train_time / 60:.1f} min")
     return result
 
 
@@ -309,21 +315,21 @@ def write_summary(dirs, folders, log) -> pd.DataFrame | None:
 
 # ---------------------------------------------------------------------------
 def main() -> None:
-    p = argparse.ArgumentParser(description="LSTM 超参数对比")
+    p = argparse.ArgumentParser(description="LSTM hyperparameter sweep (old 6-temperature experiment)")
     p.add_argument("--ext", action="store_true",
-                   help=f"跑扩展网格 W{EXT_GRID_W} x H{EXT_GRID_H} x L{EXT_GRID_L}，输出名 {EXT_NAME}")
+                   help=f"run the extended grid W{EXT_GRID_W} x H{EXT_GRID_H} x L{EXT_GRID_L}, output name {EXT_NAME}")
     p.add_argument("--smoke", action="store_true",
-                   help="快速检查：只用 25 degC、2 组、每组 2 轮，输出到 *_smoke 目录")
-    p.add_argument("--windows", nargs="+", type=int, default=None, help="只跑这些 W")
-    p.add_argument("--hidden", nargs="+", type=int, default=None, help="只跑这些 H")
-    p.add_argument("--layers", nargs="+", type=int, default=None, help="只跑这些 L")
+                   help="quick check: 25 degC only, 2 configs, 2 epochs each, output to *_smoke folders")
+    p.add_argument("--windows", nargs="+", type=int, default=None, help="only these W")
+    p.add_argument("--hidden", nargs="+", type=int, default=None, help="only these H")
+    p.add_argument("--layers", nargs="+", type=int, default=None, help="only these L")
     p.add_argument("--eval-start", type=int, default=D.EVAL_START_INDEX,
-                   help="验证误差和早停的评估起点（序列内行号），默认 "
-                        f"{D.EVAL_START_INDEX}；最初的 18 组用的是 {D.EVAL_START_INDEX_ORIGINAL}")
+                   help="evaluation start (in-sequence row index) of the validation error and early "
+                        f"stopping, default {D.EVAL_START_INDEX}; the original 18 configs used {D.EVAL_START_INDEX_ORIGINAL}")
     p.add_argument("--max-epochs", type=int, default=None,
-                   help="调试用：覆盖最大轮数（必须同时用 --name 指定另一个输出名）")
+                   help="debugging: override the maximum number of epochs (needs --name with another output name)")
     p.add_argument("--name", default=None,
-                   help=f"输出子目录名，默认 {DEFAULT_NAME}（--ext 时为 {EXT_NAME}）")
+                   help=f"output folder name, default {DEFAULT_NAME} ({EXT_NAME} with --ext)")
     p.add_argument("--device", choices=["auto", "cuda", "cpu"], default="auto")
     args = p.parse_args()
 
@@ -339,16 +345,16 @@ def main() -> None:
         bad = [v for v in ws if v not in grid_w] + \
               [v for v in hs if v not in grid_h] + [v for v in ls if v not in grid_l]
         if bad:
-            raise SystemExit(f"不在{'扩展' if args.ext else '基础'}网格里的取值：{bad}"
-                             + ("" if args.ext else "（W=180、240 要加 --ext）"))
+            raise SystemExit(f"values not in the {'extended' if args.ext else 'base'} grid: {bad}"
+                             + ("" if args.ext else " (W=180, 240 need --ext)"))
         configs = [(w, h, l) for w in ws for h in hs for l in ls]
         name = args.name or formal_name
     if name in (DEFAULT_NAME, EXT_NAME) and max_epochs != MAX_EPOCHS:
-        raise SystemExit("改了 --max-epochs 时必须用 --name 换一个输出目录，以免和正式结果混在一起")
+        raise SystemExit("--max-epochs needs --name with another output folder, so that it does not mix with the real results")
     max_w = max(c[0] for c in configs)
     if args.eval_start < max_w - 1:
-        raise SystemExit(f"--eval-start {args.eval_start} 小于最长窗口 {max_w} 的 {max_w - 1}，"
-                         "各窗口长度就不是在同一批点上比较了")
+        raise SystemExit(f"--eval-start {args.eval_start} is below W-1 of the longest window {max_w}, i.e. {max_w - 1}; "
+                         "the window lengths would not be compared on the same points")
 
     dirs = {"results": ROOT / "results" / name, "runs": ROOT / "results" / name / "runs",
             "curves": ROOT / "results" / name / "curves", "models": ROOT / "models" / name}
@@ -367,26 +373,26 @@ def main() -> None:
     torch.backends.cudnn.benchmark = False
     log("=" * 78)
     log(f"{datetime.now():%Y-%m-%d %H:%M:%S}  sweep '{name}'  smoke={args.smoke}")
-    log(f"torch {torch.__version__}，设备 {device}"
-        + (f"（{torch.cuda.get_device_name(device)}）" if device.type == "cuda" else
-           f"（CPU 线程 {torch.get_num_threads()}）"))
-    log(f"配置 {len(configs)} 组：{', '.join(config_name(*c) for c in configs)}")
-    log(f"验证误差和早停的评估起点：序列内第 {args.eval_start} 行及之后")
+    log(f"torch {torch.__version__}, device {device}"
+        + (f" ({torch.cuda.get_device_name(device)})" if device.type == "cuda" else
+           f" (CPU threads {torch.get_num_threads()})"))
+    log(f"{len(configs)} configs: {', '.join(config_name(*c) for c in configs)}")
+    log(f"Evaluation start of the validation error and early stopping: in-sequence row {args.eval_start} onwards")
 
-    # ---- 划分，并打开测试集保护 ----
+    # ---- split, and switch on the test-set guard ----
     D.block_test_files()
     splits = D.build_splits(folders)
-    try:  # 自检：保护确实生效
+    try:  # self-check: the guard really works
         D.read_raw(splits["test"][0])
-        raise AssertionError("测试集保护没有生效")
+        raise AssertionError("test-set guard is not active")
     except D.TestSetAccessError:
-        log(f"测试集保护已开启：{len(splits['test'])} 个测试文件不会被读取（已自检）")
+        log(f"Test-set guard on: the {len(splits['test'])} test files cannot be read (self-check passed)")
     for split in ("train", "val"):
-        log(f"{split}（{len(splits[split])} 条）：" + "，".join(s.id for s in splits[split]))
+        log(f"{split} ({len(splits[split])} sequences): " + ", ".join(s.id for s in splits[split]))
 
-    log("读取训练集 ...")
+    log("Loading training set ...")
     train_seqs = D.load_sequences(splits["train"], log)
-    log("读取验证集 ...")
+    log("Loading validation set ...")
     val_seqs = D.load_sequences(splits["val"], log)
 
     stats = D.compute_norm_stats(train_seqs)
@@ -396,14 +402,14 @@ def main() -> None:
         if old["computed_from"] != stats["computed_from"] or not (
                 np.allclose(old["mean"], stats["mean"], rtol=1e-9, atol=0)
                 and np.allclose(old["std"], stats["std"], rtol=1e-9, atol=0)):
-            raise SystemExit(f"{stats_path} 与本次计算的标准化参数不一致（数据变了？），"
-                             "请删除该目录下的旧结果后重跑")
+            raise SystemExit(f"{stats_path} differs from the normalisation stats computed now (did the data change?); "
+                             "delete the old results in this folder and rerun")
     else:
         D.save_norm_stats(stats, stats_path)
-    log("标准化参数（训练集）：" + "，".join(
+    log("Normalisation stats (training set): " + ", ".join(
         f"{f} mean={m:.4f} std={s:.4f}" for f, m, s in zip(D.FEATURES, stats["mean"], stats["std"])))
 
-    # ---- 开始训练前，先确认这个目录里已有的结果都是用同样的设置跑的 ----
+    # ---- before training, check that the results already in this folder used the same settings ----
     for run_json in sorted(dirs["runs"].glob("W*_H*_L*.json")):
         with open(run_json, "r", encoding="utf-8") as f:
             done_settings = json.load(f)["settings"]
@@ -413,21 +419,21 @@ def main() -> None:
                     if done_settings.get(k) != settings.get(k)}
             hint = ""
             if set(diff) == {"eval_start_index"}:
-                hint = (f"。{name} 里已有的结果是用 --eval-start {done_settings['eval_start_index']} "
-                        "跑的，续跑请加上这个参数")
-            raise SystemExit(f"{run_json.relative_to(ROOT).as_posix()} 是用不同设置跑的"
-                             f"（已有 vs 本次：{diff}）{hint}")
+                hint = (f". The results in {name} were run with --eval-start {done_settings['eval_start_index']}"
+                        "; add this option to resume")
+            raise SystemExit(f"{run_json.relative_to(ROOT).as_posix()} was run with different settings"
+                             f" (existing vs now: {diff}){hint}")
 
-    # ---- 逐组训练，已完成的跳过 ----
+    # ---- train config by config, skipping finished ones ----
     for i, (w, h, l) in enumerate(configs, 1):
         cname = config_name(w, h, l)
         run_json = dirs["runs"] / f"{cname}.json"
         if run_json.exists() and (dirs["models"] / f"{cname}.pt").exists():
             with open(run_json, "r", encoding="utf-8") as f:
                 done = json.load(f)
-            log(f"[{i}/{len(configs)}] {cname} 已完成（验证 RMSE {done['val_rmse_pct']:.3f}%），跳过")
+            log(f"[{i}/{len(configs)}] {cname} already finished (val RMSE {done['val_rmse_pct']:.3f}%), skipped")
             continue
-        log(f"[{i}/{len(configs)}] {cname} 开始训练")
+        log(f"[{i}/{len(configs)}] {cname} training")
         train_one(w, h, l, train_seqs, val_seqs, stats, settings, dirs, device, log)
         write_summary(dirs, folders, log)
 
@@ -435,9 +441,9 @@ def main() -> None:
     if df is not None:
         show = ["rank", "config", "val_rmse_pct", "val_mae_pct", "best_epoch",
                 "epochs_trained", "train_time_s", "n_params"]
-        log("\n汇总（按验证 RMSE 排序，单位 %）：")
+        log("\nSummary (sorted by validation RMSE, in %):")
         log(df[show].to_string(index=False, float_format=lambda v: f"{v:.3f}"))
-        log(f"\n已写入 {(dirs['results'] / 'sweep_results.csv').relative_to(ROOT).as_posix()}")
+        log(f"\nWrote {(dirs['results'] / 'sweep_results.csv').relative_to(ROOT).as_posix()}")
     log.close()
 
 
