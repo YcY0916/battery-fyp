@@ -37,6 +37,8 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import utf8_stdio  # noqa: E402
+utf8_stdio.setup()  # UTF-8 console output on Windows too
 import v2_analysis as A  # noqa: E402
 import v2_common as V  # noqa: E402
 
@@ -139,7 +141,7 @@ def main() -> None:
     if args.stage != "step3":
         return
     # ---- step 3 ----
-    bench = pd.read_csv(paths.bench_csv) if paths.bench_csv.exists() else None
+    bench = pd.read_csv(paths.bench_csv, encoding="utf-8") if paths.bench_csv.exists() else None
     summary, per_seed = A.step3_tables(runs, cands, bench)
     save_csv(summary, paths.tables / "step3_summary.csv")
     save_csv(per_seed, paths.tables / "step3_per_seed.csv")

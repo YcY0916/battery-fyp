@@ -37,6 +37,8 @@ import pandas as pd
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import utf8_stdio  # noqa: E402
+utf8_stdio.setup()  # UTF-8 console output on Windows too
 import lstm_data as D  # noqa: E402
 import sweep_lstm as SL  # noqa: E402
 import v2_analysis as A  # noqa: E402

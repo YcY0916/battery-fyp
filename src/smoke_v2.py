@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -32,20 +33,30 @@ import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import utf8_stdio  # noqa: E402
+utf8_stdio.setup()  # UTF-8 console output on Windows too
 import v2_common as V  # noqa: E402
 
 SRC = Path(__file__).resolve().parent
 EXP = "v2_smoke"
 EPOCHS = "2"
+CHILD_LOG = V.REPO_ROOT / "results" / EXP / "logs" / "smoke_children.log"
 RESULTS: list[tuple[str, bool, str]] = []
 
 
 def run(args: list[str], expect: int | set = 0, label: str = "") -> subprocess.CompletedProcess:
+    """Run a child script; its output is decoded as UTF-8 (the children force UTF-8 output) and
+    appended in full to results/v2_smoke/logs/smoke_children.log."""
     cmd = [sys.executable, *args]
+    env = dict(os.environ, PYTHONUTF8="1")
     t0 = time.time()
     print(f"\n$ {' '.join(args)}", flush=True)
-    p = subprocess.run(cmd, cwd=V.REPO_ROOT, capture_output=True, text=True, encoding="utf-8")
-    out = p.stdout + p.stderr
+    p = subprocess.run(cmd, cwd=V.REPO_ROOT, capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", env=env)
+    out = (p.stdout or "") + (p.stderr or "")
+    CHILD_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with open(CHILD_LOG, "a", encoding="utf-8") as f:
+        f.write(f"\n{'=' * 78}\n$ {' '.join(args)}\nexit {p.returncode}\n{out}")
     tail = "\n".join(out.strip().splitlines()[-12:])
     print(tail)
     ok = p.returncode in (expect if isinstance(expect, set) else {expect})
@@ -53,6 +64,9 @@ def run(args: list[str], expect: int | set = 0, label: str = "") -> subprocess.C
     print(f"--> {'PASS' if ok else 'FAIL'}: {label} (exit {p.returncode}, expected {expect})", flush=True)
     if not ok:
         print(out)
+    if "\ufffd" in out:  # a byte that is not valid UTF-8 was replaced while decoding
+        RESULTS.append((f"output of '{label}' is valid UTF-8", False, ""))
+        print(f"--> FAIL: output of '{label}' is not valid UTF-8 (see {CHILD_LOG.name})", flush=True)
     p.out = out
     return p
 
@@ -77,6 +91,12 @@ def main() -> None:
             "--max-epochs", EPOCHS] + (["--allow-cpu"] if args.cpu else [])
     t_all = time.time()
     formal_existed = (V.REPO_ROOT / "results" / V.FORMAL_EXP).exists()
+
+    # 0. console encoding: a child process prints the allowed symbols through a pipe
+    sym = "\u00b0 \u00b1 \u2212 \u00d7 \u00b5"
+    q = run(["-c", "import sys; sys.path.insert(0, 'src'); import utf8_stdio; utf8_stdio.setup(); "
+             f"print({sym!r})"], 0, "child prints ° ± − × µ through a pipe")
+    check(q.out.strip() == sym, "the symbols arrive as UTF-8 and decode unchanged")
 
     # 1. two configs, seed 42
     run(base + ["--configs", "L1_W360_H32,L2_W180_H32", "--seeds", "42"], 0, "train L1_W360_H32 and L2_W180_H32")

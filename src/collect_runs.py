@@ -30,6 +30,8 @@ import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import utf8_stdio  # noqa: E402
+utf8_stdio.setup()  # UTF-8 console output on Windows too
 import v2_common as V  # noqa: E402
 
 

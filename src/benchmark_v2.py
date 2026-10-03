@@ -25,6 +25,8 @@ import pandas as pd
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import utf8_stdio  # noqa: E402
+utf8_stdio.setup()  # UTF-8 console output on Windows too
 import v2_common as V  # noqa: E402
 from benchmark_inference import ITERS, WARMUP, benchmark  # noqa: E402
 from lstm_model import LSTMSOC, count_parameters  # noqa: E402

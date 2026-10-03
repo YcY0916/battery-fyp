@@ -381,7 +381,8 @@ def check_norm_stats(train_seqs: list, paths: Paths, log) -> tuple[dict, str]:
 # Code version
 # ---------------------------------------------------------------------------
 def _git(*args) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", "-C", str(REPO_ROOT), *args], capture_output=True, text=True)
+    return subprocess.run(["git", "-C", str(REPO_ROOT), *args], capture_output=True, text=True,
+                          encoding="utf-8", errors="replace")
 
 
 def code_fingerprint() -> dict:

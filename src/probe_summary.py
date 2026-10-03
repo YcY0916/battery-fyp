@@ -19,6 +19,8 @@ from pathlib import Path
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import utf8_stdio  # noqa: E402
+utf8_stdio.setup()  # UTF-8 console output on Windows too
 import v2_common as V  # noqa: E402
 from collect_runs import find_roots  # noqa: E402
 
@@ -31,7 +33,7 @@ def rows_for(paths: V.Paths, origin: str) -> list[dict]:
         if not d.is_dir() or not V.RUN_RE.match(d.name) or V.run_status(paths, d.name)[0] != "complete":
             continue
         m = V.read_json(d / "run_meta.json")
-        h = pd.read_csv(d / "train_log.csv")
+        h = pd.read_csv(d / "train_log.csv", encoding="utf-8")
         later = h[h["epoch"] >= 2]["epoch_time_s"]
         out.append({"platform": m["platform"], "gpu": m["gpu_name"], "visible": m["cuda_visible_devices"],
                     "note": m["note"], "run": d.name, "epochs": len(h),

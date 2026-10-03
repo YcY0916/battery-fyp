@@ -32,6 +32,8 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import utf8_stdio  # noqa: E402
+utf8_stdio.setup()  # UTF-8 console output on Windows too
 import v2_analysis as A  # noqa: E402
 import v2_common as V  # noqa: E402
 
@@ -139,7 +141,7 @@ def heatmap(ax, mat: np.ndarray, labels_txt: list[list[str]], colnorm: bool):
 
 
 def plot_step2(paths: V.Paths, highlight: list[str]) -> None:
-    rank = pd.read_csv(paths.tables / "step2_ranking.csv")
+    rank = pd.read_csv(paths.tables / "step2_ranking.csv", encoding="utf-8")
     rank["_k"] = rank["config"].map(V.config_sort_key)
     df = rank.sort_values("_k").reset_index(drop=True)
     unknown = [h for h in highlight if h not in set(df["config"])]
@@ -202,10 +204,10 @@ def plot_step2(paths: V.Paths, highlight: list[str]) -> None:
 # Step 3
 # ---------------------------------------------------------------------------
 def load_step3(paths: V.Paths):
-    s = pd.read_csv(paths.tables / "step3_summary.csv")
+    s = pd.read_csv(paths.tables / "step3_summary.csv", encoding="utf-8")
     s["_k"] = s["config"].map(V.config_sort_key)
     s = s.sort_values("_k").reset_index(drop=True)
-    per = pd.read_csv(paths.tables / "step3_per_seed.csv")
+    per = pd.read_csv(paths.tables / "step3_per_seed.csv", encoding="utf-8")
     return s, per
 
 
@@ -272,7 +274,7 @@ def plot_step3(paths: V.Paths) -> None:
 
     sat_path = paths.tables / "window_saturation.csv"
     if sat_path.exists():
-        sat = pd.read_csv(sat_path)
+        sat = pd.read_csv(sat_path, encoding="utf-8")
         L = ["## window_saturation.csv", "", "File: `tables/window_saturation.csv`. Step-3 configs that share L and H "
              "but differ in W, compared between adjacent windows: absolute improvement (mean RMSE of the shorter "
              "window minus that of the longer window), relative improvement, and the pooled seed-to-seed sample "
@@ -292,7 +294,7 @@ def plot_step3(paths: V.Paths) -> None:
 # Final figures
 # ---------------------------------------------------------------------------
 def plot_window(paths: V.Paths) -> None:
-    rank = pd.read_csv(paths.tables / "step2_ranking.csv")
+    rank = pd.read_csv(paths.tables / "step2_ranking.csv", encoding="utf-8")
     fig, ax = plt.subplots(figsize=(SINGLE_W, 2.4))
     for h in V.GRID_H:
         color, ls, _ = H_STYLE[h]
@@ -351,11 +353,11 @@ def plot_params(paths: V.Paths, final: str) -> None:
 
 def plot_test(paths: V.Paths, final: str) -> None:
     tdir = paths.test / final
-    res = pd.read_csv(tdir / "test_results.csv")
+    res = pd.read_csv(tdir / "test_results.csv", encoding="utf-8")
     res = res[res["cycle"] != "all"]
     groups = [("seen", res)]
     if (tdir / "unseen_temp_results.csv").exists():
-        u = pd.read_csv(tdir / "unseen_temp_results.csv")
+        u = pd.read_csv(tdir / "unseen_temp_results.csv", encoding="utf-8")
         groups.append(("unseen", u[u["cycle"] != "all"]))
     temps = []
     for kind, g in groups:
@@ -387,7 +389,7 @@ def plot_test(paths: V.Paths, final: str) -> None:
                        for c in cycles], ncol=len(cycles), loc="lower center", bbox_to_anchor=(0.5, 1.06))
     files = save(fig, paths, "fig_test_per_temp")
     print(f"Wrote {', '.join(files)}")
-    avg = pd.read_csv(tdir / "test_results.csv")
+    avg = pd.read_csv(tdir / "test_results.csv", encoding="utf-8")
     avg = avg[avg["cycle"] == "all"].iloc[0]
     L = ["## fig_test_per_temp", "", f"Files: `{files[0]}`, `{files[1]}`.", "",
          f"Test RMSE of the final config {final} per temperature (x) and drive cycle (colour and marker): "
@@ -411,7 +413,7 @@ def plot_us06(paths: V.Paths, final: str, cycle: str) -> None:
                              gridspec_kw={"height_ratios": [2.2, 1]}, squeeze=False)
     err_lim, stats = 0.0, {}
     for j, f in enumerate(avail):
-        d = pd.read_csv(pdir / f"{f}_{cycle}.csv")
+        d = pd.read_csv(pdir / f"{f}_{cycle}.csv", encoding="utf-8")
         t = d["time_s"] / 60.0
         err = (d["soc_pred"] - d["soc_true"]) * 100
         err_lim = max(err_lim, float(np.abs(err).max()))

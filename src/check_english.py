@@ -22,6 +22,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import utf8_stdio  # noqa: E402
+utf8_stdio.setup()  # UTF-8 console output on Windows too
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ALLOWED = set("°±−×µ")
 BINARY_EXT = {".png", ".pdf", ".pt", ".npz", ".npy", ".zip", ".jpg", ".jpeg", ".gif", ".pkl", ".h5", ".xlsx"}

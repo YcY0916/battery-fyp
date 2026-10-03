@@ -9,9 +9,14 @@ No v1 result is reused in v2.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import utf8_stdio  # noqa: E402
+utf8_stdio.setup()  # UTF-8 console output on Windows too
 
 ROOT = Path(__file__).resolve().parents[1] / "results" / "paper_0to40"
 
@@ -21,7 +26,7 @@ def show(name: str, cols: list[str]) -> None:
     if not path.exists():
         print(f"{path}: not found")
         return
-    df = pd.read_csv(path)
+    df = pd.read_csv(path, encoding="utf-8")
     have = [c for c in cols if c in df.columns]
     print(f"\n{name} ({len(df)} rows; columns shown: {', '.join(have)})")
     print(df[have].to_string(index=False, float_format=lambda v: f"{v:.1f}"))
