@@ -6,7 +6,7 @@
 
 Checks (any failure stops the script with a list):
     - every folder in runs/ and models/ has a valid run name, is complete and its hashes match;
-    - no missing runs: step2 = the 30 configs with seed 42; step3 = the 6 configs of
+    - no missing runs: step2 = the 30 configs with seed 42; step3 = the N configs of
       shards/step3_candidates.txt with seeds 42-46 (only with --stage step3);
     - no unexpected runs (a config or seed outside the protocol);
     - every run has the same training code fingerprint, sha256 of the normalisation file used for
@@ -81,8 +81,8 @@ def main() -> None:
     cands = []
     if args.stage == "step3":
         cands = V.read_step3_candidates(args.candidates_file)
-        if len(cands) != V.N_STEP3_CONFIGS and not args.allow_missing:
-            problems.append(f"{args.candidates_file.name} lists {len(cands)} configs, expected {V.N_STEP3_CONFIGS}")
+        if not cands:
+            problems.append(f"{args.candidates_file.name} lists no configs")
         want |= {V.run_name(c, s) for c in cands for s in V.STEP3_SEEDS}
     allowed = {V.run_name(c, V.STEP2_SEED) for c in grid} | \
               {V.run_name(c, s) for c in (cands or grid) for s in V.STEP3_SEEDS}

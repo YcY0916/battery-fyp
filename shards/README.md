@@ -11,8 +11,8 @@ Used with `python src/run_shard.py --shard-file shards/<file> --platform <platfo
 | `step2_laptop.txt` | Laptop RTX 4050 | L2 x W300/360 x H32/64/128 (6) |
 | `probe.txt` | every platform | timing probe: L2_W360_H128 and L1_W60_H32, 3 epochs, experiment `timing_v2` |
 
-`step3_candidates.txt` (the 6 configs chosen by the author) and the `step3_*.txt` shard files are
-written after step 2 by `python src/make_step3_files.py --configs <the six configs>`: all four seeds
+`step3_candidates.txt` (the N configs chosen by the author; seven were chosen) and the `step3_*.txt`
+shard files are written after step 2 by `python src/make_step3_files.py --configs <the configs>`: all four seeds
 (43-46) of a config on one platform, preferably the platform of its seed-42 run, heavy configs
 (L2 or W >= 240) never on Colab. These files are not training files: the tag `v2-protocol` is not
 affected. The split of runs between platforms does not change any training setting; every
