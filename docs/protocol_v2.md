@@ -48,10 +48,14 @@ Machine-readable parts of the protocol:
 - Resampling: every file to 1 Hz (f_s = 1 Hz) by `floor(time_s)`; voltage, current and temperature
   are averaged within the second, SOC is the last row of the second.
 - Normalisation: mean and standard deviation of the three inputs over all training rows after
-  resampling, computed once from the training set only. Every run recomputes it from the training
-  files and stops unless the result is byte-identical to `protocol/v2/norm_stats.json`, whose
-  sha256 must equal the v1 file (`00c97f00...6156a5b`). A copy is written to
-  `results/paper_0to40_v2/norm_stats.json`.
+  resampling, computed once from the training set only and stored in `protocol/v2/norm_stats.json`,
+  whose sha256 must equal the v1 file (`00c97f00...6156a5b`). Every run on every platform trains
+  with the values of this file, read as is, so the normalisation is bit-identical everywhere.
+  As a check, every run also recomputes the statistics from the training files and stops unless
+  they come from the same training files and row count and every mean and standard deviation
+  agrees with the file to a relative difference of at most 1e-9 (`NORM_REL_TOL`); the recomputed
+  values are never used. The largest relative difference is stored in every `run_meta.json`.
+  A copy of the file is written to `results/paper_0to40_v2/norm_stats.json`.
 - **Evaluation start EVAL_START = 359** (longest window 360 − 1). The validation loss used for
   early stopping and every reported validation and test metric use only rows with in-sequence index
   >= 359 of each validation / test file, so every window length is scored on the same points
@@ -171,16 +175,19 @@ Every figure is written as PNG (300 dpi) and PDF, with English text only, and de
 - Pre-flight checks before any training (the run does not start if one fails): code = tag
   `v2-protocol` or no difference in the training files (`src/lstm_data.py`, `src/lstm_model.py`,
   `src/sweep_lstm.py`, `src/v2_common.py`, `src/run_shard.py`, `protocol/v2/*.json`); data files
-  present and their sha256 correct; normalisation sha256 correct; GPU available.
+  present and their sha256 correct; normalisation file sha256 correct and recomputed statistics
+  within the tolerance (section 2); GPU available.
 - One folder per run, files written atomically (temporary name, then rename), `COMPLETE.json`
   (sha256 of every file) last: weights (`models/paper_0to40_v2/<run>/model.pt`), per-epoch training
   log, validation predictions (npz), metrics (overall and per temperature, rows >= 359) and
-  `run_meta.json` (git commit, platform, GPU, versions, normalisation sha256, data sha256 summary,
+  `run_meta.json` (git commit, platform, GPU, versions, sha256 of the normalisation file used for
+  training, largest relative difference of the recomputed normalisation, data sha256 summary,
   code fingerprint, hyperparameters, seed, start and end time, epochs trained, best epoch, seconds
   per epoch, training time).
 - An interrupted run is discarded and trained again from epoch 1 (`--skip-existing`).
-- Merging stops on missing runs, duplicate runs, incomplete runs, or any difference in code
-  fingerprint, normalisation sha256, data sha256 or hyperparameters.
+- Merging stops on missing runs, duplicate runs, incomplete runs, a recomputed-normalisation
+  difference above the tolerance, or any difference in code fingerprint, sha256 of the
+  normalisation file used for training, data sha256 or hyperparameters.
 
 ## 10. Language
 
@@ -192,3 +199,30 @@ experiment outputs; it is run before every pull request and after every stage wi
 ## Changelog
 
 - 2026-10-03: first version (before any v2 training).
+- 2026-10-03, entry 2 (before any formal v2 result; the only runs so far were the smoke test and
+  the timing probe of the temporary experiments `v2_smoke` and `timing_v2`, none of which is used):
+  - **What changed.** The normalisation check. Before: every run recomputed the statistics and
+    stopped unless the recomputed file was byte-identical (same sha256) to
+    `protocol/v2/norm_stats.json`. Now: training uses the protocol file as is (unchanged: the old
+    code also trained with the values read from this file), its sha256 is still checked exactly,
+    and the recomputed statistics only have to agree within a relative difference of 1e-9; the
+    difference is recorded in `run_meta.json` and checked again when merging.
+    `make_protocol_files.py --check` applies the same rule.
+  - **Why.** On Colab and Kaggle (Python 3.13, older numpy / pandas) the recomputed statistics
+    differ from the laptop's in the last bits: sha256 `8f35f8ce8cda...`, largest relative
+    difference 1.39e-13, identical on both clouds (deterministic, not random). The same result
+    was reproduced with numpy 2.2.6 + pandas 2.2.3, while newer numpy / pandas reproduce the
+    file exactly. The difference comes from floating-point rounding in the resampling means, not
+    from the data (the data files are checked by exact sha256 separately).
+  - **Why 1e-9.** Float64 rounding differences between library versions are of order 1e-16 to
+    1e-12 (observed: 1.39e-13), so 1e-9 leaves a margin of about 7,000 times. The network inputs
+    are float32 (relative resolution about 6e-8), so a difference below 1e-9 in the statistics
+    could not change any normalised input value in a meaningful way even if it were used (it is
+    not). A real change in how the statistics are computed (a dropped or added row, another
+    resampling rule, another training file) changes them by far more than 1e-9 and stops the run;
+    changes of the data themselves are caught by the exact data hashes.
+  - Also changed, not affecting training: the Kaggle notebook calls `src/kaggle_two_gpus.py`,
+    which checks the two processes every 10 s instead of every 5 minutes.
+  - **Tag.** `src/v2_common.py` and `src/run_shard.py` are training files, so the tag
+    `v2-protocol` was moved from `72454af` to the merge commit of this change; `72454af` keeps the
+    tag `v2-protocol-r0`.

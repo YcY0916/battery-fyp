@@ -6,7 +6,7 @@ All 4 temperatures, every run limited to 2 epochs. Runs and checks, in order:
     1. train L1_W360_H32 and L2_W180_H32 (seed 42) with run_shard.py; check their files;
     2. rerun with --skip-existing: nothing is trained; without it: the script refuses;
     3. interruption: a run stopped by --deadline-h is discarded; a half-written run folder is
-       retrained by --skip-existing;
+       retrained by --skip-existing; recomputed normalisation stats 1e-12 off pass, 1e-6 off stop;
     4. guards: the formal experiment rejects wrong seeds, --max-epochs and temporary stages;
        results/paper_0to40 cannot be written;
     5. seed 43 of L1_W60_H32 and L1_W360_H32 (to exercise the step-3 tables);
@@ -104,7 +104,7 @@ def main() -> None:
         check(V.run_status(paths, r)[0] == "complete", f"{r} complete with verified hashes")
         meta = V.read_json(paths.run_dir(r) / "run_meta.json")
         need = ["git_commit", "platform", "gpu_name", "torch_version", "cuda_version", "cudnn_version",
-                "python_version", "norm_stats_sha256", "data_sha256_summary", "hyperparameters", "seed",
+                "python_version", "norm_stats_sha256", "norm_recompute_max_rel_diff", "data_sha256_summary", "hyperparameters", "seed",
                 "start_time", "end_time", "epochs_trained", "best_epoch", "sec_per_epoch", "train_time_s",
                 "code_fingerprint"]
         check(all(k in meta for k in need), f"{r} run_meta.json has all required fields")
@@ -165,6 +165,25 @@ def main() -> None:
         check(stage == "step2", f"{s.name}: stage step2")
     check(sorted(listed) == sorted(V.run_name(c, 42) for c in V.step2_configs()),
           f"step-2 shard files cover the 30 runs exactly once ({len(listed)} lines in {len(shards)} files)")
+
+    # 4b. normalisation tolerance: the recomputed stats may differ in the last bits, not more
+    meta0 = V.read_json(paths.run_dir("L1_W360_H32_seed42") / "run_meta.json")
+    diff0 = meta0["norm_recompute_max_rel_diff"]
+    check(0 <= diff0 <= V.NORM_REL_TOL and meta0["norm_rel_tolerance"] == V.NORM_REL_TOL,
+          f"run_meta.json records the recomputed normalisation difference ({diff0:.3e} <= {V.NORM_REL_TOL:.0e})")
+    q = run(base + ["--configs", "L1_W60_H32", "--seeds", "44", "--test-norm-perturb", "1e-12"], 0,
+            "recomputed stats off by 1e-12: passes")
+    d44 = V.read_json(paths.run_dir("L1_W60_H32_seed44") / "run_meta.json")
+    check(5e-13 < d44["norm_recompute_max_rel_diff"] <= V.NORM_REL_TOL
+          and d44["norm_stats_sha256"] == V.EXPECTED_NORM_SHA256,
+          f"... trained with the protocol file, difference recorded ({d44['norm_recompute_max_rel_diff']:.2e})")
+    q = run(base + ["--configs", "L1_W60_H32", "--seeds", "45", "--test-norm-perturb", "1e-6"], 1,
+            "recomputed stats off by 1e-6: stops")
+    check("Normalisation check FAILED" in q.out and V.run_status(paths, "L1_W60_H32_seed45")[0] == "absent",
+          "... stopped before training (no run folder)")
+    run(["src/run_shard.py", "--exp", V.FORMAL_EXP, "--stage", "step2", "--configs", "L1_W60_H32",
+         "--seeds", "42", "--platform", args.platform, "--test-norm-perturb", "1e-12"], 1,
+        "formal rejects the test options")
 
     # 5. seed 43 of two configs (for the step-3 tables)
     run(base + ["--configs", "L1_W60_H32,L1_W360_H32", "--seeds", "43"], 0, "train seed 43 of two configs")
