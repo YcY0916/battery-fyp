@@ -171,9 +171,16 @@ def default_name(temps: list[int]) -> str:
     return "paper_" + "_".join(f"n{-t}" if t < 0 else str(t) for t in sorted(temps))
 
 
+# The v1 results (results/paper_0to40, models/paper_0to40) are read only: no script may write there.
+READ_ONLY_NAMES = {DEFAULT_NAME}
+
+
 def resolve(args: argparse.Namespace) -> Context:
     temps = sorted(args.temps) if args.temps else list(DEFAULT_TEMPS)
     name = args.name or default_name(temps)
+    if name in READ_ONLY_NAMES:
+        raise SystemExit(f"results/{name} and models/{name} are read only (v1 experiment). "
+                         "The v2 pipeline is src/run_shard.py (see docs/protocol_v2.md).")
     if args.smoke:
         temps = list(SMOKE_TEMPS)
         if not name.endswith("_smoke"):

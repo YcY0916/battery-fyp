@@ -1,0 +1,4 @@
+# Timing probe: one heavy and one light config; run with --exp timing_v2 --max-epochs 3.
+stage: probe
+L2_W360_H128 42
+L1_W60_H32 42

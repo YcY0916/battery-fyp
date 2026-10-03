@@ -1,0 +1,11 @@
+# Step 2 on Colab (free T4): the 9 short-window L1 runs, shortest first. If Colab stops, the unfinished ones move to the laptop.
+stage: step2
+L1_W60_H32 42
+L1_W60_H64 42
+L1_W60_H128 42
+L1_W120_H32 42
+L1_W120_H64 42
+L1_W120_H128 42
+L1_W180_H32 42
+L1_W180_H64 42
+L1_W180_H128 42

@@ -1,0 +1,8 @@
+# Step 2 on Kaggle, process bound to CUDA_VISIBLE_DEVICES=0 (T4 #0).
+stage: step2
+L1_W360_H32 42
+L1_W360_H64 42
+L1_W360_H128 42
+L2_W240_H32 42
+L2_W240_H64 42
+L2_W240_H128 42
