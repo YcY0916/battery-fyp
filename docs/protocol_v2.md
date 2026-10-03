@@ -93,19 +93,21 @@ H128 200,321 (independent of W). Initial delay before the first estimate: W / f_
 - After step 2 the runs are merged, the step-2 heatmaps are drawn and a ranked text summary is
   produced (`tables/step2_summary.txt`).
 
-## 5. Choice of the six step-3 configs (by the author; no code chooses)
+## 5. Choice of the step-3 configs (by the author; no code chooses)
 
 - Claude recommends six configs with reasons, using mainly the overall validation RMSE (seed 42,
   rows >= 359), pointing out which gaps are too small to separate with a single seed, and, where
   gaps are small, the per-temperature results (especially each config's worst temperature), the
   number of parameters, the inference cost and the initial delay W / f_s. The plain top six by
   overall RMSE are listed next to the recommendation, with the differences explained.
-- The author chooses the final six. They are committed in `shards/step3_candidates.txt`, and the
-  step-2 heatmaps are redrawn with `--highlight` on these six.
+- The author chooses the final step-3 configs (six were planned; the author chose seven, see the
+  changelog, entry 3). They are committed in `shards/step3_candidates.txt`, and the step-2
+  heatmaps are redrawn with `--highlight` on them.
 
 ## 6. Step 3: multiple seeds
 
-- Each of the six configs is trained again with seeds 43, 44, 45 and 46 (24 new runs); with seed
+- Each chosen config is trained again with seeds 43, 44, 45 and 46 (4 new runs per config: 28 for
+  the seven chosen configs); with seed
   42 from step 2 every config has five seeds.
 - Reported per config: overall and per-temperature validation RMSE as mean ± sample std (ddof = 1),
   every seed's result, parameters, CPU inference time, initial delay W / f_s.
@@ -141,11 +143,11 @@ Every figure is written as PNG (300 dpi) and PDF, with English text only, and de
    The caption states that these are single training runs with seed 42.
 2. `step2_ranking.csv` and a copyable text summary: overall rank, per-temperature RMSE,
    parameters, W.
-3. Step-3 heatmap (6 configs, same columns): colour = mean over the five seeds, cell text
+3. Step-3 heatmap (the chosen configs, same columns): colour = mean over the five seeds, cell text
    "mean ± std".
 4. Step-3 summary table: overall and per-temperature mean and std, every seed's result,
    parameters, CPU inference time (ms), initial delay W / f_s (s).
-5. Step-3 dot plot: 6 configs × 5 seeds, one panel per column (Overall and the four
+5. Step-3 dot plot: chosen configs × 5 seeds, one panel per column (Overall and the four
    temperatures); point = mean, bar = ± std, plus every seed as a small dot.
 6. Window saturation: for step-3 configs that share L and H but differ in W, the absolute and
    relative improvement between adjacent windows, compared with the seed-to-seed standard
@@ -226,3 +228,11 @@ experiment outputs; it is run before every pull request and after every stage wi
   - **Tag.** `src/v2_common.py` and `src/run_shard.py` are training files, so the tag
     `v2-protocol` was moved from `72454af` to the merge commit of this change; `72454af` keeps the
     tag `v2-protocol-r0`.
+- 2026-10-03, entry 3 (after step 2, before any step-3 run): **number of step-3 configs.** The
+  plan said six; after seeing the step-2 results the author chose seven: L2_W300_H32,
+  L2_W360_H64, L2_W180_H64, L1_W360_H64, L1_W180_H128, L1_W180_H64, L1_W180_H32 (28 step-3 runs
+  instead of 24). This is the author's decision, not a rule chosen by code; no training setting,
+  seed or evaluation rule changes. `make_step3_files.py` and `merge_v2.py` now take the number of
+  configs from `shards/step3_candidates.txt` instead of requiring six. Neither is a training file,
+  so the tag `v2-protocol` does not move (the unused constant `N_STEP3_CONFIGS = 6` in
+  `src/v2_common.py` is left as it is, because that file is a training file).

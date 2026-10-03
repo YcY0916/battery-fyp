@@ -188,7 +188,7 @@ def plot_step2(paths: V.Paths, highlight: list[str]) -> None:
                 "", "The differences between temperatures are much larger than the differences between configs, "
                 "which is why both colourings are given."]
         if highlight:
-            note += ["", "Outlined rows (the six configs chosen by the author for step 3): " + ", ".join(highlight) + "."]
+            note += ["", f"Outlined rows (the {len(highlight)} configs chosen by the author for step 3): " + ", ".join(highlight) + "."]
         write_note(paths, stem + suffix, "\n".join(note))
     best = rank.sort_values("val_rmse_Overall").iloc[0]
     write_note(paths, "step2_ranking", "\n".join([

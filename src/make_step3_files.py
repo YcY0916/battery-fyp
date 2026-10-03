@@ -1,10 +1,10 @@
-"""Write the step-3 files after the author has chosen the six configs.
+"""Write the step-3 files after the author has chosen the step-3 configs (any number N, e.g. 6 to 8).
 
     python src/make_step3_files.py --configs L1_W300_H64,L1_W240_H32,L1_W180_H64,L2_W240_H32,L2_W300_H32,L1_W360_H32
     python src/make_step3_files.py --configs ... --dry-run     # only print the plan
 
 Writes
-    shards/step3_candidates.txt                  the six configs (read by run_shard.py, merge_v2.py, ...)
+    shards/step3_candidates.txt                  the N chosen configs (read by run_shard.py, merge_v2.py, ...)
     shards/step3_laptop.txt, step3_kaggle_gpu0.txt, step3_kaggle_gpu1.txt, step3_colab.txt
                                                  seeds 43-46; all four seeds of a config on one platform
 
@@ -60,7 +60,7 @@ def step2_platform(config: str, paths: V.Paths, shard_map: dict) -> str:
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Write shards/step3_candidates.txt and the step-3 shard files")
-    p.add_argument("--configs", required=True, help="the six configs, comma-separated")
+    p.add_argument("--configs", required=True, help="the chosen step-3 configs (N >= 1), comma-separated")
     p.add_argument("--exp", default=V.FORMAL_EXP)
     p.add_argument("--out-root", type=Path, default=V.REPO_ROOT)
     p.add_argument("--dry-run", action="store_true")
@@ -70,8 +70,8 @@ def main() -> None:
     configs = [c.strip() for c in args.configs.split(",") if c.strip()]
     grid = V.step2_configs()
     bad = [c for c in configs if c not in grid]
-    if bad or len(configs) != V.N_STEP3_CONFIGS or len(set(configs)) != len(configs):
-        raise SystemExit(f"Need {V.N_STEP3_CONFIGS} different configs from the step-2 grid; got {configs}"
+    if bad or not configs or len(set(configs)) != len(configs):
+        raise SystemExit(f"Need one or more different configs from the step-2 grid; got {configs}"
                          + (f" (not in the grid: {bad})" if bad else ""))
     configs.sort(key=V.config_sort_key)
     paths = V.Paths(args.out_root, args.exp)
@@ -116,7 +116,7 @@ def main() -> None:
     for pl, h in loads(assign).items():
         print(f"  {pl:12s} total about {h:4.1f} h")
 
-    files = {V.STEP3_CANDIDATES_FILE: "# The six step-3 configs chosen by the author (written by src/make_step3_files.py)\n"
+    files = {V.STEP3_CANDIDATES_FILE: f"# The {len(configs)} step-3 configs chosen by the author (written by src/make_step3_files.py)\n"
                                       + "".join(f"{c}\n" for c in configs)}
     for pl in PLATFORMS:
         mine = [c for c in configs if assign[c] == pl]
@@ -138,7 +138,7 @@ def main() -> None:
         covered += parse_shard_file(V.SHARDS_DIR / f"step3_{pl}.txt")[1]
     want = [(c, s) for c in configs for s in V.STEP3_SEEDS]
     if sorted(covered) != sorted(want):
-        raise SystemExit("Internal check failed: the step-3 shard files do not cover the 24 runs exactly once")
+        raise SystemExit(f"Internal check failed: the step-3 shard files do not cover the {len(want)} runs exactly once")
     print(f"Check OK: the 4 step-3 shard files cover the {len(want)} runs exactly once.")
 
 
