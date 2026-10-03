@@ -9,7 +9,8 @@ Checks (any failure stops the script with a list):
     - no missing runs: step2 = the 30 configs with seed 42; step3 = the 6 configs of
       shards/step3_candidates.txt with seeds 42-46 (only with --stage step3);
     - no unexpected runs (a config or seed outside the protocol);
-    - every run has the same training code fingerprint, normalisation sha256, data sha256 summary
+    - every run has the same training code fingerprint, sha256 of the normalisation file used for
+      training (and a recomputed-normalisation difference within the tolerance), data sha256 summary
       and hyperparameters; metrics.json agrees with val_predictions.npz.
 Duplicates cannot exist inside one folder (one folder per run); runs trained twice on different
 platforms are caught by collect_runs.py.
@@ -113,11 +114,14 @@ def main() -> None:
     plat = all_df.groupby(["platform", "gpu_name", "hostname"], sort=True).agg(
         n_runs=("run", "size"), runs=("run", lambda v: " ".join(v)),
         torch=("torch_version", lambda v: " ".join(sorted(set(v)))),
-        cuda=("cuda_version", lambda v: " ".join(sorted(set(map(str, v)))))).reset_index()
+        cuda=("cuda_version", lambda v: " ".join(sorted(set(map(str, v))))),
+        python=("python_version", lambda v: " ".join(sorted(set(map(str, v))))),
+        norm_max_rel_diff=("norm_recompute_max_rel_diff", "max")).reset_index()
     save_csv(plat, paths.tables / "runs_by_platform.csv")
     log("\nRuns per platform (results of the same seed differ slightly between GPUs / torch versions):")
     for _, r in plat.iterrows():
-        log(f"  {r['platform']:7s} {r['gpu_name']} ({r['hostname']}, torch {r['torch']}, CUDA {r['cuda']}): "
+        log(f"  {r['platform']:7s} {r['gpu_name']} ({r['hostname']}, Python {r['python']}, torch {r['torch']}, "
+            f"CUDA {r['cuda']}; recomputed normalisation max rel. diff {r['norm_max_rel_diff']:.1e}): "
             f"{r['n_runs']} runs: {r['runs']}")
 
     # ---- step 2 ----

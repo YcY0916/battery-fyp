@@ -18,8 +18,10 @@ Before any training the pre-flight checks must pass (otherwise the script exits)
     1. code: HEAD = tag v2-protocol, or the training files do not differ from the tag;
     2. data: every train / val file and manifest.json matches protocol/v2/data_sha256.json,
        every test file is present (test files are never opened here);
-    3. normalisation: protocol/v2/norm_stats.json has the v1 sha256 and is reproduced exactly
-       from the training set; it is copied to results/<exp>/norm_stats.json;
+    3. normalisation: training always uses protocol/v2/norm_stats.json as is; its sha256 must be
+       the v1 value, and the stats recomputed from the training set must agree with it to a
+       relative difference <= 1e-9 (the recomputed values are never used); the file is copied to
+       results/<exp>/norm_stats.json;
     4. GPU: CUDA is available.
 For experiments other than paper_0to40_v2 (smoke test, timing probe) a failed code check only
 warns, --max-epochs may be set and --allow-cpu is accepted.
@@ -209,7 +211,7 @@ def train_run(config: str, seed: int, stage: str, data: dict, stats: dict, norm_
         meta = {
             "run": run, "config": config, "num_layers": l, "window": w, "hidden_size": h, "seed": seed,
             "exp": paths.exp, "stage": stage, "note": args.note,
-            **pre["environment"], **pre["code"], **pre["data"],
+            **pre["environment"], **pre["code"], **pre["data"], **pre["norm"],
             "norm_stats_sha256": norm_sha, "hyperparameters": hp,
             "n_params": n_par, "n_train_windows": len(train_ds), "n_val_points": len(val_ds),
             "skipped_short_train_sequences": [s for s, _ in train_ds.skipped],
@@ -255,13 +257,14 @@ def main() -> None:
     p.add_argument("--note", default="", help="free text stored in run_meta.json (e.g. 'two processes')")
     p.add_argument("--dry-run", action="store_true", help="only list the runs and their status")
     p.add_argument("--test-abort-epoch", type=int, default=None, help=argparse.SUPPRESS)
+    p.add_argument("--test-norm-perturb", type=float, default=0.0, help=argparse.SUPPRESS)
     args = p.parse_args()
 
     t_start = time.time()
     deadline = t_start + args.deadline_h * 3600 if args.deadline_h else None
     formal = args.exp == V.FORMAL_EXP
-    if formal and (args.max_epochs is not None or args.allow_cpu or args.test_abort_epoch):
-        raise SystemExit(f"--max-epochs and --allow-cpu are not allowed for {V.FORMAL_EXP}")
+    if formal and (args.max_epochs is not None or args.allow_cpu or args.test_abort_epoch or args.test_norm_perturb):
+        raise SystemExit(f"--max-epochs, --allow-cpu and the test options are not allowed for {V.FORMAL_EXP}")
     stage, runs = plan(args)
     D.set_data_root(args.data_root)
     paths = V.Paths(args.out_root, args.exp)
@@ -304,10 +307,12 @@ def main() -> None:
     except D.TestSetAccessError:
         log(f"Test-set guard on: the {len(splits['test'])} test files cannot be read (self-check passed)")
     data = {"train": D.load_sequences(splits["train"], log), "val": D.load_sequences(splits["val"], log)}
-    stats, norm_sha = V.check_norm_stats(data["train"], paths, log)
+    stats, norm_sha, norm_rel = V.check_norm_stats(data["train"], paths, log, perturb=args.test_norm_perturb)
     hp = V.hyperparameters(args.max_epochs)
     env = V.environment(device, args.platform)
-    pre = {"environment": env, "code": code, "data": data_info}
+    pre = {"environment": env, "code": code, "data": data_info,
+           "norm": {"norm_stats_file": V.PROTOCOL_NORM_STATS.relative_to(V.REPO_ROOT).as_posix(),
+                    "norm_recompute_max_rel_diff": norm_rel, "norm_rel_tolerance": V.NORM_REL_TOL}}
     log(f"Hyperparameters: lr {hp['lr']}, batch {hp['batch_size']}, max epochs {hp['max_epochs']}, "
         f"patience {hp['patience']}, eval start {hp['eval_start_index']}")
     log("All pre-flight checks passed.")

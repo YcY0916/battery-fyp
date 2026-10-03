@@ -61,6 +61,9 @@ N_STEP3_CONFIGS = 6
 PROTECTED_DIRS = [("results", "paper_0to40"), ("models", "paper_0to40")]
 # The old normalisation file (v1, results/paper_0to40/norm_stats.json); the v2 file must be identical
 EXPECTED_NORM_SHA256 = "00c97f004a5f80a4144dda3e4fe5bf8400e36462c36cef5dba67a12666156a5b"
+# Largest relative difference allowed between the recomputed and the protocol normalisation stats
+# (see docs/protocol_v2.md, changelog entry 2 of 2026-10-03)
+NORM_REL_TOL = 1e-9
 NORM_NOTE = ("Computed once from the training set only (all rows after 1 s resampling); "
              "validation and test sets use these values unchanged.")
 
@@ -348,9 +351,30 @@ def build_norm_stats(train_seqs: list) -> dict:
     return stats
 
 
-def check_norm_stats(train_seqs: list, paths: Paths, log) -> tuple[dict, str]:
-    """Check the protocol file (sha256 = the v1 file), recompute it from the training set and
-    compare, then copy it into results/<exp>/norm_stats.json. Returns (stats, sha256)."""
+def compare_norm_stats(reference: dict, fresh: dict) -> float:
+    """Largest relative difference between two normalisation stats (over every mean and std).
+
+    Raises ValueError if they were not computed from the same training files, features or row count."""
+    for key in ("features", "computed_from", "n_rows"):
+        if fresh[key] != reference[key]:
+            raise ValueError(f"'{key}' differs: recomputed {fresh[key]!r} vs protocol {reference[key]!r}")
+    rel = 0.0
+    for key in ("mean", "std"):
+        ref, new = np.asarray(reference[key], dtype=np.float64), np.asarray(fresh[key], dtype=np.float64)
+        rel = max(rel, float(np.max(np.abs(new - ref) / np.abs(ref))))
+    return rel
+
+
+def check_norm_stats(train_seqs: list, paths: Paths, log, perturb: float = 0.0) -> tuple[dict, str, float]:
+    """Normalisation used for training = protocol/v2/norm_stats.json, read as is on every platform.
+
+    1. The file's sha256 must be EXPECTED_NORM_SHA256 (= the v1 file); otherwise stop.
+    2. The stats are recomputed from the training set and compared number by number; the largest
+       relative difference must be <= NORM_REL_TOL; otherwise stop. The recomputed values are never
+       used for training (different numpy / Python versions can differ in the last bits).
+    3. The protocol file is copied byte for byte to results/<exp>/norm_stats.json.
+    perturb (tests only): multiply the recomputed mean and std by (1 + perturb) before comparing.
+    Returns (stats from the protocol file, its sha256, largest relative difference)."""
     proto_bytes = lf_bytes(PROTOCOL_NORM_STATS)
     proto_sha = hashlib.sha256(proto_bytes).hexdigest()
     if proto_sha != EXPECTED_NORM_SHA256:
@@ -358,23 +382,29 @@ def check_norm_stats(train_seqs: list, paths: Paths, log) -> tuple[dict, str]:
                          f"!= expected {EXPECTED_NORM_SHA256}. Stop and ask.")
     stats = json.loads(proto_bytes.decode("utf-8"))
     fresh = build_norm_stats(train_seqs)
+    if perturb:
+        fresh["mean"] = [v * (1 + perturb) for v in fresh["mean"]]
+        fresh["std"] = [v * (1 + perturb) for v in fresh["std"]]
+        log(f"TEST: recomputed stats multiplied by (1 + {perturb:g}) before the comparison")
     fresh_sha = hashlib.sha256(norm_stats_bytes(fresh)).hexdigest()
-    if fresh["computed_from"] != stats["computed_from"] or fresh["features"] != stats["features"]:
-        raise SystemExit("Normalisation check FAILED: the training files differ from the protocol file")
-    if fresh_sha != proto_sha:
-        rel = max(float(np.max(np.abs((np.array(fresh[k]) - np.array(stats[k])) / np.array(stats[k]))))
-                  for k in ("mean", "std"))
-        raise SystemExit(f"Normalisation check FAILED: recomputed stats have sha256 {fresh_sha[:12]} "
-                         f"(max relative difference {rel:.2e}) instead of {proto_sha[:12]}. Stop and ask.")
+    try:
+        rel = compare_norm_stats(stats, fresh)
+    except ValueError as e:
+        raise SystemExit(f"Normalisation check FAILED: {e}. Stop and ask.")
+    if rel > NORM_REL_TOL:
+        raise SystemExit(f"Normalisation check FAILED: recomputed stats differ from {PROTOCOL_NORM_STATS.name} "
+                         f"by up to {rel:.3e} (relative), more than the tolerance {NORM_REL_TOL:.0e}. Stop and ask.")
     if paths.norm_stats.exists():
         have = file_sha256(paths.norm_stats)
         if have != proto_sha:
             raise SystemExit(f"{paths.norm_stats} exists with sha256 {have[:12]} != {proto_sha[:12]}")
     else:
         write_bytes_atomic(paths.norm_stats, proto_bytes)
-    log(f"Normalisation check OK: recomputed from {len(train_seqs)} training sequences, "
-        f"sha256 {proto_sha} (= v1 file); copy at {paths.rel(paths.norm_stats)}")
-    return stats, proto_sha
+    same = "byte-identical" if fresh_sha == proto_sha else f"recomputed sha256 {fresh_sha[:12]}"
+    log(f"Normalisation check OK: training uses {PROTOCOL_NORM_STATS.relative_to(REPO_ROOT).as_posix()} "
+        f"(sha256 {proto_sha}, = v1 file); recomputed from {len(train_seqs)} training sequences: "
+        f"max relative difference {rel:.3e} <= {NORM_REL_TOL:.0e} ({same}); copy at {paths.rel(paths.norm_stats)}")
+    return stats, proto_sha, rel
 
 
 # ---------------------------------------------------------------------------

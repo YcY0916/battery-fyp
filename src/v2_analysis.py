@@ -84,6 +84,9 @@ def check_consistency(runs: dict, log) -> None:
     for r, rec in runs.items():
         if rec["meta"]["norm_stats_sha256"] != V.EXPECTED_NORM_SHA256:
             errors.append(f"  {r}: normalisation sha256 is not the protocol value")
+        diff = rec["meta"].get("norm_recompute_max_rel_diff")
+        if diff is None or diff > V.NORM_REL_TOL:
+            errors.append(f"  {r}: recomputed normalisation differs by {diff} (tolerance {V.NORM_REL_TOL:.0e})")
     if errors:
         raise CheckError("Consistency check FAILED:\n" + "\n".join(errors))
     if runs:
@@ -108,7 +111,10 @@ def run_row(rec: dict) -> dict:
                 "sec_per_epoch": m["sec_per_epoch"], "train_time_s": m["train_time_s"],
                 "platform": m["platform"], "hostname": m["hostname"], "gpu_name": m["gpu_name"],
                 "torch_version": m["torch_version"], "cuda_version": m["cuda_version"],
-                "cudnn_version": m["cudnn_version"], "git_commit": m["git_commit"][:12],
+                "cudnn_version": m["cudnn_version"], "python_version": m["python_version"],
+                "norm_stats_sha256": m["norm_stats_sha256"][:12],
+                "norm_recompute_max_rel_diff": m.get("norm_recompute_max_rel_diff"),
+                "git_commit": m["git_commit"][:12],
                 "start_time": m["start_time"], "end_time": m["end_time"]})
     return row
 
