@@ -1,0 +1,5 @@
+# Step 3 on colab (written by src/make_step3_files.py)
+stage: step3
+L1_W180_H32 43,44,45,46
+L1_W180_H64 43,44,45,46
+L1_W180_H128 43,44,45,46

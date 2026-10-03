@@ -1,0 +1,8 @@
+# The 7 step-3 configs chosen by the author (written by src/make_step3_files.py)
+L1_W180_H32
+L1_W180_H64
+L1_W180_H128
+L1_W360_H64
+L2_W180_H64
+L2_W300_H32
+L2_W360_H64

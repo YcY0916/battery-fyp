@@ -1,0 +1,4 @@
+# Step 3 on laptop (written by src/make_step3_files.py)
+stage: step3
+L2_W300_H32 43,44,45,46
+L2_W360_H64 43,44,45,46
