@@ -12,5 +12,8 @@ Used with `python src/run_shard.py --shard-file shards/<file> --platform <platfo
 | `probe.txt` | every platform | timing probe: L2_W360_H128 and L1_W60_H32, 3 epochs, experiment `timing_v2` |
 
 `step3_candidates.txt` (the 6 configs chosen by the author) and the `step3_*.txt` shard files are
-added after step 2. The split of runs between platforms does not change any training setting; every
+written after step 2 by `python src/make_step3_files.py --configs <the six configs>`: all four seeds
+(43-46) of a config on one platform, preferably the platform of its seed-42 run, heavy configs
+(L2 or W >= 240) never on Colab. These files are not training files: the tag `v2-protocol` is not
+affected. The split of runs between platforms does not change any training setting; every
 run records the platform it ran on.
