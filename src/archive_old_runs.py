@@ -63,31 +63,31 @@ TARGETS: list[tuple[str, str]] = [
     ("models/transformer_lr*", "feature/gru-cnn-transformer"),
 ]
 
-README_TEMPLATE = """# 归档：6 温度 LSTM 实验（2026-09）
+README_TEMPLATE = """# Archive: 6-temperature LSTM experiment (2026-09)
 
-本目录由 `src/archive_old_runs.py --apply` 生成（最近一次：{now}），存放论文改为只用 0–40 °C 之前的旧实验输出。
-这些文件只是从原位置移动过来，内容没有修改，也没有删除任何文件；`data/` 下的文件完全没有动过。
+This folder was created by `src/archive_old_runs.py --apply` (last run: {now}). It holds the outputs of the old experiment from before the paper was restricted to 0-40 °C.
+The files were only moved here from their original locations; their content was not changed and no file was deleted. Nothing under `data/` was touched.
 
-## 这批结果属于什么实验
+## Which experiment these results belong to
 
-- 温度：6 个（−20、−10、0、10、25、40 °C）。
-- 划分（旧划分，按整个文件）：
-  - 验证集：每个温度编号最大的 Mixed，共 6 个（611_Mixed8、604_Mixed8、590_Mixed8、571_Mixed8、552_Mixed8、557_Mixed3）；
-  - 训练集：其余 Mixed，共 37 条序列（含 602_Mixed4、571_Mixed6 的 _part1/_part2）；
-  - 测试集：全部 UDDS、HWFET、LA92、US06，共 23 个（25 °C 没有 HWFET）。
-- 超参数对比：22 组配置。
-  - 最初 18 组：W ∈ {{30, 60, 120}} × H ∈ {{32, 64, 128}} × L ∈ {{1, 2}}，早停评估起点为第 119 行；
-  - 扩展 4 组：W ∈ {{180, 240}} × H ∈ {{32, 128}} × L = 1，评估起点为第 239 行；
-  - 合并表（`results/lstm_sweep_ext/sweep_results_22.csv`）统一在第 239 行之后重新计算验证误差。
-- 最佳配置：**W240_H32_L1**。
-- 对应代码：git tag `archive-6temp-2026-09`（master 提交 be7b363）。
-- 如果存在 feature/gru-cnn-transformer 分支（GRU / 1D-CNN / Transformer 对比，同样是 6 温度旧划分）的输出，也一并归档在这里。
+- Temperatures: 6 (−20, −10, 0, 10, 25, 40 °C).
+- Split (old split, by whole files):
+  - validation: the highest-numbered Mixed of each temperature, 6 files (611_Mixed8, 604_Mixed8, 590_Mixed8, 571_Mixed8, 552_Mixed8, 557_Mixed3);
+  - training: the other Mixed files, 37 sequences (including the _part1/_part2 of 602_Mixed4 and 571_Mixed6);
+  - test: every UDDS, HWFET, LA92 and US06, 23 files (25 °C has no HWFET).
+- Hyperparameter comparison: 22 configs.
+  - first 18: W in {{30, 60, 120}} × H in {{32, 64, 128}} × L in {{1, 2}}, early-stopping evaluation from row 119;
+  - extension, 4 configs: W in {{180, 240}} × H in {{32, 128}} × L = 1, evaluation from row 239;
+  - the merged table (`results/lstm_sweep_ext/sweep_results_22.csv`) recomputes every validation error from row 239.
+- Best config: **W240_H32_L1**.
+- Code: git tag `archive-6temp-2026-09` (master commit be7b363).
+- Outputs of the feature/gru-cnn-transformer branch (GRU / 1D-CNN / Transformer comparison, same old 6-temperature split), if present, are archived here as well.
 
-## 移动记录
+## Moves
 
 {table}
 
-{kept}完整的逐文件清单见 `ARCHIVE_MANIFEST.csv`（每次 --apply 追加）。
+{kept}The complete per-file list is in `ARCHIVE_MANIFEST.csv` (appended by every --apply).
 """
 
 
@@ -228,11 +228,11 @@ def write_records(root: Path, archive_root: Path, plans, moved: list[dict]) -> N
         g = groups.setdefault(r["target"], [0, 0, r["origin"], r["moved_at"]])
         g[0] += 1
         g[1] += int(r["bytes"])
-    lines = ["| 原路径 | 来源 | 文件数 | 大小 | 移动时间 |", "|---|---|---|---|---|"]
+    lines = ["| Original path | Source | Files | Size | Moved at |", "|---|---|---|---|---|"]
     for top, (n, size, origin, when) in sorted(groups.items()):
         lines.append(f"| `{top}` | {origin} | {n} | {human_size(size)} | {when} |")
     kept = [f.relative_to(root).as_posix() for p in plans for f in p["keep"]]
-    kept_txt = ("以下文件被 git 跟踪，留在原处没有移动：" + "、".join(f"`{k}`" for k in kept) + "。\n\n"
+    kept_txt = ("These files are tracked by git and were left in place: " + ", ".join(f"`{k}`" for k in kept) + ".\n\n"
                 if kept else "")
     (archive_root / "ARCHIVE_README.md").write_text(
         README_TEMPLATE.format(now=datetime.now().strftime("%Y-%m-%d %H:%M"),

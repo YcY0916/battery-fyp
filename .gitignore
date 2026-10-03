@@ -8,3 +8,8 @@ results/*_smoke/
 models/*_smoke/
 results/timing_*/
 models/timing_*/
+# v2 experiment outputs stay out of git (backed up separately)
+results/paper_0to40_v2/
+models/paper_0to40_v2/
+results/v2_*/
+models/v2_*/

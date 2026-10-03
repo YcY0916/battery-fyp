@@ -1,0 +1,8 @@
+# Step 2 on the laptop (RTX 4050): the heaviest runs (L2, W300 and W360).
+stage: step2
+L2_W300_H32 42
+L2_W300_H64 42
+L2_W300_H128 42
+L2_W360_H32 42
+L2_W360_H64 42
+L2_W360_H128 42

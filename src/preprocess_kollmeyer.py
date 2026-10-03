@@ -1,15 +1,15 @@
-"""Kollmeyer LG 18650HG2 数据集清洗（v2，2026-09-28）。
+"""Cleaning of the Kollmeyer LG 18650HG2 data set (v2, 2026-09-28).
 
-把 D 盘上每个原始 CSV 清洗成独立的时间序列（遇到断档再拆段），列为
+Cleans every raw CSV on drive D into independent time series (split again at logging gaps), with the columns
     time_s, voltage, current, temperature, soc, ah
-不切窗口、不标准化、不划分训练/测试集，这些留到各自的模型阶段。
+No windowing, no normalisation, no train/test split; those belong to the model stages.
 
-所有人工决定都以常量的形式写在本文件前半部分，不从文件名自动推断。
-每条决定的理由见 data/processed/kollmeyer_clean/DATA_REPORT.md。
+Every manual decision is written as a constant in the first half of this file, never inferred from file names.
+The reason for every decision is in data/processed/kollmeyer_clean/DATA_REPORT.md.
 
-用法：
+Usage:
     python src/preprocess_kollmeyer.py
-或在 notebook 里：
+or in a notebook:
     import preprocess_kollmeyer as pk
     result = pk.run()
 """
@@ -21,7 +21,7 @@ import sys
 import numpy as np
 import pandas as pd
 
-# ---------------------------------------------------------------- 路径
+# ---------------------------------------------------------------- paths
 RAW_ROOT = (r"D:\kdata\LG 18650HG2 Li-ion Battery Data and Example Deep Neural Network xEV SOC "
             r"Estimator Script\LG_HG2_Original_Dataset_McMasterUniversity_Jan_2020")
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -30,8 +30,8 @@ OUT_DIR = os.path.join(PROJECT_ROOT, "data", "processed", "kollmeyer_clean")
 TEMPS = ["n20degC", "n10degC", "0degC", "10degC", "25degC", "40degC"]
 NOMINAL_T = {"n20degC": -20, "n10degC": -10, "0degC": 0, "10degC": 10, "25degC": 25, "40degC": 40}
 
-# ---------------------------------------------------------------- 原始 CSV 格式（208 个文件都已核对）
-CSV_SKIPROWS = 30  # 第 1-28 行是说明，第 29 行列名，第 30 行单位，第 31 行起是数据
+# ---------------------------------------------------------------- raw CSV format (checked for all 208 files)
+CSV_SKIPROWS = 30  # rows 1-28 are a description, row 29 the column names, row 30 the units, data from row 31
 CSV_COLS = ["TimeStamp", "Step", "Status", "ProgTime", "StepTime", "Cycle", "CycleLevel", "Procedure",
             "Voltage", "Current", "Temperature", "Capacity", "WhAccu", "Cnt", "Extra"]
 EXPECTED_COLNAMES = ("Time Stamp,Step,Status,Prog Time,Step Time,Cycle,Cycle Level,Procedure,"
@@ -39,35 +39,35 @@ EXPECTED_COLNAMES = ("Time Stamp,Step,Status,Prog Time,Step Time,Cycle,Cycle Lev
 EXPECTED_UNITS = ",,,,,,,,[V],[A],[C],[Ah],[Wh],[Cnt],"
 TS_FORMAT = "%m/%d/%Y %I:%M:%S %p"
 
-# Time Stamp = 程序开始时的系统时间 + 实际经过时间（暂停也计入）。
-# 2018-11-04 02:00 夏令时结束之前启动的程序是 EDT (UTC-4)，之后启动的是 EST (UTC-5)。
+# Time Stamp = system time at program start + real elapsed time (pauses included).
+# Programs started before the end of daylight saving time on 2018-11-04 02:00 are EDT (UTC-4), later ones EST (UTC-5).
 DST_END_LOCAL = pd.Timestamp("2018-11-04 02:00:00")
 
-# ---------------------------------------------------------------- 清洗规则
-TAIL_PROCEDURE = "NN_Char_Charge"        # HPPC / 0.5C / 2C 结束后的"升温 -> 1C 充电 -> 降温"段
+# ---------------------------------------------------------------- cleaning rules
+TAIL_PROCEDURE = "NN_Char_Charge"        # the "warm up -> 1C charge -> cool down" part after HPPC / 0.5C / 2C
 TAIL_TYPES = ("HPPC", "Dis_0p5C", "Dis_2C")
-LOG_LEVELS_S = (0.1, 1.0, 10.0, 60.0)    # 测试仪的采样间隔档位
-SPLIT_MARGIN_S = 3.0                     # 断档：ProgTime 或 UTC 时间戳的间隔超过"采样间隔 + 3 s"
-TEMP_TOLERANCE_C = 3.0                   # 测试段最低温度与文件夹温度相差 <= 3 degC 算一致
-LA92_582_RESUME_LOCAL = pd.Timestamp("2018-11-26 00:00:00")  # 582_LA92 只保留暂停 13.2 h 后恢复运行的部分
+LOG_LEVELS_S = (0.1, 1.0, 10.0, 60.0)    # logging intervals of the tester
+SPLIT_MARGIN_S = 3.0                     # gap: ProgTime or UTC time-stamp step larger than "logging interval + 3 s"
+TEMP_TOLERANCE_C = 3.0                   # the test part is consistent if its minimum temperature is within 3 degC of the folder temperature
+LA92_582_RESUME_LOCAL = pd.Timestamp("2018-11-26 00:00:00")  # 582_LA92: keep only the part resumed after the 13.2 h pause
 
-# ---------------------------------------------------------------- 收录 / 排除（a 放错文件夹，b 测试中止或记录出错，c 正常但特殊）
-_562 = "实验舱未开，电池在室温约 23-25 degC；程序在 Charge10 重启、跳过了 Cap_1C，停机容量只有约 0.2 Ah"
+# ---------------------------------------------------------------- included / excluded (a wrong folder, b test aborted or logging error, c normal but special)
+_562 = "test chamber not switched on, the cell was at room temperature of about 23-25 degC; the program restarted at Charge10 and skipped Cap_1C, the cutoff capacity is only about 0.2 Ah"
 EXCLUDE = {
-    ("25degC", "551_HWFET"): ("b", "HWFET 曲线没有执行：全程电流为 0，文件里只有 10 分钟静置"),
-    ("25degC", "552_PausCycl"): ("b", "工况没有执行：4 次 TABLE 步骤都立即结束，只有静置和一次 0.015 Ah 的补充充电"),
-    ("40degC", "562_Mixed4"): ("b", _562 + "，只放电 0.19 Ah"),
-    ("40degC", "562_Mixed5"): ("b", _562 + "，只放电 0.19 Ah"),
-    ("40degC", "562_Mixed6"): ("b", _562 + "，只放电 0.19 Ah"),
-    ("40degC", "562_Mixed7"): ("b", _562 + "，只放电 0.19 Ah"),
-    ("40degC", "562_Mixed8"): ("b", _562 + "，只放电 0.19 Ah"),
-    ("40degC", "562_PausCycl"): ("b", _562 + "，只运行 192 s"),
-    ("10degC", "571_Cap_1C"): ("a", "实际在约 0.7-3.6 degC 下放电（实验舱只在这一步偏冷），不是 10 degC 数据"),
-    ("40degC", "557_Cap_1C"): ("b", "放电过程中电池从 38.4 degC 降到 1.3 degC，不在任何恒定温度下"),
+    ("25degC", "551_HWFET"): ("b", "the HWFET profile was not executed: the current is 0 throughout, the file only holds a 10-minute rest"),
+    ("25degC", "552_PausCycl"): ("b", "the cycle was not executed: all 4 TABLE steps ended at once; only rests and one 0.015 Ah top-up charge"),
+    ("40degC", "562_Mixed4"): ("b", _562 + "; only 0.19 Ah discharged"),
+    ("40degC", "562_Mixed5"): ("b", _562 + "; only 0.19 Ah discharged"),
+    ("40degC", "562_Mixed6"): ("b", _562 + "; only 0.19 Ah discharged"),
+    ("40degC", "562_Mixed7"): ("b", _562 + "; only 0.19 Ah discharged"),
+    ("40degC", "562_Mixed8"): ("b", _562 + "; only 0.19 Ah discharged"),
+    ("40degC", "562_PausCycl"): ("b", _562 + "; ran for only 192 s"),
+    ("10degC", "571_Cap_1C"): ("a", "actually discharged at about 0.7-3.6 degC (the chamber was cold only in this step); not 10 degC data"),
+    ("40degC", "557_Cap_1C"): ("b", "during the discharge the cell cooled from 38.4 degC to 1.3 degC; not at any constant temperature"),
 }
-CHARGE_EXCLUSION = ("-", "例行 1C 恒流恒压充电，按设计在 22-25 degC 进行（与文件夹温度无关），60 s 采样，不属于测试")
+CHARGE_EXCLUSION = ("-", "routine 1C constant-current constant-voltage charge, done at 22-25 degC by design (independent of the folder temperature), 60 s logging; not a test")
 
-# _excluded 里 soc 列的填法：("batch", 批次) 用该批次满容量；("own",) 用文件自己测出的容量；None 留空
+# How the soc column is filled in _excluded: ("batch", batch) uses that batch's full capacity; ("own",) the capacity measured in the file itself; None leaves it empty
 EXCLUDED_SOC = {
     ("25degC", "551_HWFET"): ("batch", "551"),
     ("25degC", "552_PausCycl"): ("batch", "552"),
@@ -75,11 +75,11 @@ EXCLUDED_SOC = {
     ("40degC", "557_Cap_1C"): ("own",),
 }
 
-# ---------------------------------------------------------------- 满容量（统一规则，用户 2026-09-28 确认）
-# 规则 1：自己的 Cap_1C 文件存在且在正确温度下测 -> 用它
+# ---------------------------------------------------------------- full capacity (one rule set, confirmed by the user on 2026-09-28)
+# Rule 1: the batch's own Cap_1C file exists and was measured at the right temperature -> use it
 OWN_CAP1C = {"610": "n20degC", "611": "n20degC", "596": "n10degC", "602": "n10degC",
              "589": "0degC", "576": "10degC", "551": "25degC", "552": "25degC"}
-# 规则 2：自己的 Cap_1C 缺失 -> 停机容量反推（末尾 |Ah| / 0.95），与老化模型预测相差 <= 0.5 % 才采用
+# Rule 2: own Cap_1C missing -> back-calculate from the cutoff capacity (final |Ah| / 0.95); accepted only if within 0.5 % of the aging-model prediction
 BACKCALC = {"556": ("40degC", ["UDDS", "HWFET", "LA92", "US06", "Mixed1", "Mixed2"]),
             "567": ("10degC", ["US06", "Mixed1", "Mixed2"]),
             "582": ("10degC", ["LA92"]),
@@ -88,43 +88,43 @@ BACKCALC = {"556": ("40degC", ["UDDS", "HWFET", "LA92", "US06", "Mixed1", "Mixed
             "604": ("n10degC", ["Mixed3", "Mixed6", "Mixed7", "Mixed8"])}
 RULE2_TOLERANCE = 0.005
 RULE2_ACCEPTED = ["582", "590", "601", "604"]
-# 556：40 degC 没有同温度的有效容量，只做跨温度检验（假设 40 degC 比 25 degC 高 0.5-1.0 %），用户接受
+# 556: no valid same-temperature capacity at 40 degC, only a cross-temperature check (assuming 40 degC is 0.5-1.0 % above 25 degC); accepted by the user
 CROSS_TEMP_556 = {"reference": "552", "gain_range": (0.005, 0.010)}
-# 规则 3（以及未通过规则 2 的 567）：同温度时间最近的有效容量 + 老化修正
+# Rule 3 (and 567, which failed rule 2): the nearest valid capacity at the same temperature + aging correction
 AGED_FROM = {"571": ("10degC", "576", "571_Cap_1C"),
              "557": ("40degC", "556", "557_Cap_1C"),
              "567": ("10degC", "576", "567_Cap_1C (missing)")}
 RULE3_END_SOC_RANGE = (0.05, 0.12)
-# 特性测试批次：借用紧接着的工况批次的容量，按每个文件开始时刻与参照之间的放电量做老化修正
+# Characterisation batches: borrow the capacity of the drive-cycle batch that follows, with an aging correction for the discharge between each file's start and the reference
 CHAR_REFERENCE = {"607": "610", "593": "596", "585": "589", "575": "576", "549": "551", "555": "556"}
-# 老化模型：同温度成对的 1C 容量测试，衰减按放电量线性计
+# Aging model: paired 1C capacity tests at the same temperature; the fade is linear in the discharged Ah
 AGING_PAIRS_POOLED = [("551", "552"), ("596", "602")]
-AGING_PAIR_N20 = ("610", "611")  # -20 degC 专用速率（只有这一对数据）
-# 做过但不在数据集里的测试（放电量是估计值，只用于累计放电量）；时间为当地时间 EST
+AGING_PAIR_N20 = ("610", "611")  # rate for -20 degC only (one pair of data only)
+# Tests that were run but are not in the data set (discharge is an estimate, used only for the cumulative discharge); local time EST
 MISSING_TESTS = [
-    ("556_Cap_1C (missing)", "2018-11-05 19:40", 2.66, "556_Charge1 与 556_Charge2 之间 1.1 h 的空档"),
-    ("567_Cap_1C (missing)", "2018-11-12 19:27", 2.61, "567 程序 17:21 开始，CyclesA 的 Cap_1C 在 +2.1 h"),
-    ("567_UDDS/HWFET/LA92 (missing)", "2018-11-13 04:00", 3.56 + 2.61 + 3.48, "按 576_UDDS、576_HWFET、582_LA92 的放电量估计"),
-    ("582_Cap_1C (missing)", "2018-11-25 15:10", 2.54, "582 程序开始 7.9 h 后才出现 LA92"),
-    ("590_Cap_1C (missing)", "2018-12-01 10:00", 2.45, "589_Charge8 与 590_Charge10 之间 1 h 的空档"),
-    ("601_Cap_1C (missing)", "2018-12-14 22:20", 2.24, "601 程序开始 6.8 h 后才出现 US06"),
-    ("604_Cap_1C (missing)", "2018-12-17 21:50", 2.22, "604_Charge17 与 604_Charge9 之间 56 min 的空档"),
+    ("556_Cap_1C (missing)", "2018-11-05 19:40", 2.66, "1.1 h gap between 556_Charge1 and 556_Charge2"),
+    ("567_Cap_1C (missing)", "2018-11-12 19:27", 2.61, "program 567 started at 17:21; the CyclesA Cap_1C is at +2.1 h"),
+    ("567_UDDS/HWFET/LA92 (missing)", "2018-11-13 04:00", 3.56 + 2.61 + 3.48, "estimated from the discharge of 576_UDDS, 576_HWFET, 582_LA92"),
+    ("582_Cap_1C (missing)", "2018-11-25 15:10", 2.54, "LA92 appears only 7.9 h after program 582 started"),
+    ("590_Cap_1C (missing)", "2018-12-01 10:00", 2.45, "1 h gap between 589_Charge8 and 590_Charge10"),
+    ("601_Cap_1C (missing)", "2018-12-14 22:20", 2.24, "US06 appears only 6.8 h after program 601 started"),
+    ("604_Cap_1C (missing)", "2018-12-17 21:50", 2.22, "56 min gap between 604_Charge17 and 604_Charge9"),
 ]
 
-# ---------------------------------------------------------------- 附注（写进 manifest）
+# ---------------------------------------------------------------- notes (written into the manifest)
 FILE_NOTES = {
     ("10degC", "575_HPPC"): ["575"], ("10degC", "575_C20DisCh"): ["575"],
     ("10degC", "575_Dis_0p5C"): ["575"], ("10degC", "575_Dis_2C"): ["575"],
-    ("0degC", "589_Cap_1C"): ["对应的 .mat 文件名误写为 10degC；实测温度 -0.6 至 2.2 degC，是 0 degC 测试"],
+    ("0degC", "589_Cap_1C"): ["the matching .mat file name says 10degC by mistake; measured temperature -0.6 to 2.2 degC, a 0 degC test"],
 }
-NOTE_575 = ("表头电池名是 LG ICR18650MG1（软件里选错了电池档案），温度传感器、电阻和容量趋势都表明仍是同一颗 HG2；"
-            "测试电流按 2.9 Ah 设定，比其他温度低 3.3 %，HPPC 每个 SOC 台阶是 0.145 Ah")
+NOTE_575 = ("the cell name in the header is LG ICR18650MG1 (wrong cell profile chosen in the software); the temperature sensor, resistance and capacity trend all show it is still the same HG2 cell; "
+            "test currents were set for 2.9 Ah, 3.3 % lower than at the other temperatures; each HPPC SOC step is 0.145 Ah")
 
 COLUMN_SPEC = [("time_s", "%.3f"), ("voltage", "%.5f"), ("current", "%.5f"), ("temperature", "%.5f"),
                ("soc", "%.6f"), ("ah", "%.5f")]
 
 
-# ================================================================ 读取
+# ================================================================ reading
 def classify(name):
     batch, test = name.split("_", 1)
     if test in ("UDDS", "HWFET", "LA92", "US06"):
@@ -144,7 +144,7 @@ def list_raw_files(raw_root=RAW_ROOT):
 
 
 def _hms_seconds(series):
-    """'06:40:55.195'（小时可超过 24）-> 秒。"""
+    """'06:40:55.195' (hours may exceed 24) -> seconds."""
     p = series.astype(str).str.split(":", expand=True).apply(pd.to_numeric, errors="coerce")
     return (p[0] * 3600 + p[1] * 60 + p[2]).to_numpy(dtype=float)
 
@@ -165,10 +165,10 @@ def read_raw(folder, name, raw_root=RAW_ROOT):
     path = os.path.join(raw_root, folder, name + ".csv")
     meta, header_ok = read_header(path)
     if not header_ok:
-        raise ValueError(f"{folder}/{name}: CSV 表头格式与预期不同")
+        raise ValueError(f"{folder}/{name}: CSV header format differs from the expected one")
     df = pd.read_csv(path, skiprows=CSV_SKIPROWS, header=None, names=CSV_COLS, low_memory=False, encoding="latin-1")
     ts = df["TimeStamp"].astype(str).str.strip()
-    ts = ts.where(ts.str.contains(":"), ts + " 12:00:00 AM")  # 正好午夜的记录只写了日期
+    ts = ts.where(ts.str.contains(":"), ts + " 12:00:00 AM")  # records exactly at midnight only carry the date
     start_local = pd.to_datetime(meta["Start Time"], format=TS_FORMAT)
     utc_offset = -4 if start_local < DST_END_LOCAL else -5
     ts_local = pd.to_datetime(ts, format=TS_FORMAT)
@@ -198,9 +198,9 @@ def file_md5(path):
     return h.hexdigest()
 
 
-# ================================================================ 第一遍：逐文件汇总（时间线）
+# ================================================================ pass 1: summary per file (timeline)
 def step_segments(df):
-    """按 (Step, Status) 变化切成的连续段 [(a, b), ...]。"""
+    """Continuous parts split at changes of (Step, Status): [(a, b), ...]."""
     key = df["step"].astype("float").fillna(-1).astype(int).astype(str) + "|" + df["status"]
     k = key.to_numpy()
     ch = np.r_[0, np.where(k[1:] != k[:-1])[0] + 1, len(k)]
@@ -208,7 +208,7 @@ def step_segments(df):
 
 
 def logging_interval(df):
-    """每一行所在步骤的采样间隔（步骤内间隔中位数，向上取到 0.1/1/10/60 s 档位）。"""
+    """Logging interval of the step of every row (median interval inside the step, rounded up to the 0.1/1/10/60 s levels)."""
     t = df["t"].to_numpy()
     out = np.full(len(t), LOG_LEVELS_S[0])
     for a, b in step_segments(df):
@@ -218,7 +218,7 @@ def logging_interval(df):
 
 
 def ah_totals(t, I, Ah):
-    """按 Ah 计数器累计的放电 / 充电 Ah（跳过计数器清零和时间倒退处）。"""
+    """Discharged / charged Ah accumulated from the Ah counter (skipping counter resets and time going backwards)."""
     ok = ~(np.isnan(t) | np.isnan(I) | np.isnan(Ah))
     t, I, Ah = t[ok], I[ok], Ah[ok]
     dA, dt = np.diff(Ah), np.diff(t)
@@ -229,7 +229,7 @@ def ah_totals(t, I, Ah):
 
 
 def state_times(df):
-    """静置 / 放电 / 充电（按电流正负）以及记录断档各占的秒数（按 ProgTime 计）。"""
+    """Seconds of rest / discharge / charge (by the sign of the current) and of logging gaps (by ProgTime)."""
     t, I = df["t"].to_numpy(), df["I"].to_numpy()
     thr = np.full(len(t), 3.0)
     for a, b in step_segments(df):
@@ -270,16 +270,16 @@ def summarize(raw):
     }
     if kind in TAIL_TYPES or kind == "C20DisCh":
         nn = np.where(df["procedure"].to_numpy() == TAIL_PROCEDURE)[0]
-        s["anchor_ah"] = float(Ah[0] - I[0] * df["step_t"].iloc[0] / 3600)  # 第一个放电步骤开始时的 Ah
+        s["anchor_ah"] = float(Ah[0] - I[0] * df["step_t"].iloc[0] / 3600)  # Ah at the start of the first discharge step
         if len(nn):
             s.update(tail_first=int(nn[0]), tail_last=int(nn[-1]), ah_test_end=float(Ah[nn[0] - 1]),
                      ah_tail_start=float(Ah[nn[0]]), ah_tail_end=float(Ah[nn[-1]]))
     return s
 
 
-# ================================================================ 老化模型与满容量
+# ================================================================ aging model and full capacity
 def aged(c_ref, ah_ref, ah_target, rate):
-    """线性衰减：之后的容量 = 之前的容量 x (1 - rate x 放电量)。"""
+    """Linear fade: later capacity = earlier capacity x (1 - rate x discharged Ah)."""
     if ah_target >= ah_ref:
         return c_ref * (1 - rate * (ah_target - ah_ref))
     return c_ref / (1 - rate * (ah_ref - ah_target))
@@ -289,7 +289,7 @@ def throughput_events(summ):
     rows = [{"id": s["name"], "folder": s["folder"], "time_utc": s["start_utc"], "Ah_discharged": s["Ah_discharged"]}
             for s in summ.values()]
     for tid, local, ah, basis in MISSING_TESTS:
-        rows.append({"id": tid, "folder": "(不在数据集)", "time_utc": pd.Timestamp(local) + pd.Timedelta(hours=5),
+        rows.append({"id": tid, "folder": "(not in the data set)", "time_utc": pd.Timestamp(local) + pd.Timedelta(hours=5),
                      "Ah_discharged": ah, "basis": basis})
     ev = pd.DataFrame(rows).sort_values("time_utc", kind="stable").reset_index(drop=True)
     ev["cum_before_Ah"] = ev["Ah_discharged"].cumsum() - ev["Ah_discharged"]
@@ -305,7 +305,7 @@ def compute_capacities(summ):
     for b, (folder, tests) in BACKCALC.items():
         ends = [-by[f"{b}_{t}"]["ah_last"] for t in tests]
         if max(ends) - min(ends) > 1e-3:
-            raise ValueError(f"{b}: 各文件末尾放电量不一致 {ends}")
+            raise ValueError(f"{b}: the final discharge differs between files {ends}")
         back[b] = float(np.median(ends) / 0.95)
 
     def rate_of(pair):
@@ -316,11 +316,11 @@ def compute_capacities(summ):
               / sum(cum[f"{b}_Cap_1C"] - cum[f"{a}_Cap_1C"] for a, b in AGING_PAIRS_POOLED))
     r_n20 = rate_of(AGING_PAIR_N20)
     aging = {"rate_pooled_per_Ah": r_pool, "pair_rates_per_Ah": pair_rates, "rate_n20degC_per_Ah": r_n20,
-             "n20degC_note": "-20 degC 的速率只来自 610 -> 611 这一对数据"}
+             "n20degC_note": "the -20 degC rate comes only from the pair 610 -> 611"}
 
     caps, checks = {}, []
     for b, folder in OWN_CAP1C.items():
-        caps[b] = {"capacity_Ah": own[b], "rule": "1", "source": f"{b}_Cap_1C（本批次实测）", "folder": folder}
+        caps[b] = {"capacity_Ah": own[b], "rule": "1", "source": f"{b}_Cap_1C (measured in this batch)", "folder": folder}
     for b, (folder, _) in BACKCALC.items():
         refs = [(k, abs(cum[f"{k}_Cap_1C"] - cum[f"{b}_Cap_1C (missing)"])) for k, f in OWN_CAP1C.items() if f == folder]
         rec = {"batch": b, "folder": folder, "backcalc_Ah": back[b]}
@@ -340,32 +340,32 @@ def compute_capacities(summ):
             rec.update(reference=None, cross_temperature_estimate=(lo, hi), cross_temperature_c25=c25,
                        passed=None, cross_check_ok=lo <= back[b] <= hi)
             if not rec["cross_check_ok"]:
-                raise ValueError(f"{b}: 跨温度检验不通过 {back[b]:.4f} 不在 {lo:.4f}-{hi:.4f}")
+                raise ValueError(f"{b}: cross-temperature check failed: {back[b]:.4f} not in {lo:.4f}-{hi:.4f}")
         checks.append(rec)
         if b in RULE2_ACCEPTED:
             if not rec["passed"]:
-                raise ValueError(f"{b}: 规则 2 检验不通过（偏差 {rec['deviation'] * 100:+.2f} %），需要重新确认")
+                raise ValueError(f"{b}: rule 2 check failed (deviation {rec['deviation'] * 100:+.2f} %), confirm again")
             caps[b] = {"capacity_Ah": back[b], "rule": "2", "folder": folder,
-                       "source": f"停机容量反推（与老化预测相差 {rec['deviation'] * 100:+.2f} %，参照 {rec['reference']}）"}
+                       "source": f"back-calculated from the cutoff capacity ({rec['deviation'] * 100:+.2f} % from the aging prediction, reference {rec['reference']})"}
         elif b == "556":
-            caps[b] = {"capacity_Ah": back[b], "rule": "2（无同温度参照）", "folder": folder,
-                       "source": f"停机容量反推；40 degC 无同温度有效容量，只做跨温度检验（{lo:.4f}-{hi:.4f}）"}
+            caps[b] = {"capacity_Ah": back[b], "rule": "2 (no same-temperature reference)", "folder": folder,
+                       "source": f"back-calculated from the cutoff capacity; no valid same-temperature capacity at 40 degC, cross-temperature check only ({lo:.4f}-{hi:.4f})"}
     dev567 = next(c["deviation"] for c in checks if c["batch"] == "567")
     for b, (folder, ref, target) in AGED_FROM.items():
         c_ref = caps[ref]["capacity_Ah"]
         ref_key = f"{ref}_Cap_1C" if ref in OWN_CAP1C else f"{ref}_Cap_1C (missing)"
         cap = aged(c_ref, cum[ref_key], cum[target], r_pool)
-        why = ("规则 3（本批次 Cap_1C 在错误温度下测得）" if b != "567"
-               else f"规则 2 未通过（反推值 {back['567']:.4f} 与预测相差 {dev567 * 100:+.2f} %），改用规则 3 的做法")
+        why = ("rule 3 (this batch's Cap_1C was measured at the wrong temperature)" if b != "567"
+               else f"rule 2 failed (back-calculated {back['567']:.4f}, {dev567 * 100:+.2f} % from the prediction), rule 3 used instead")
         if b != "567":
             ends = [-s["ah_last"] for s in summ.values() if s["batch"] == b and s["test_type"] in ("drive", "mixed")]
             end_soc = 1 - float(np.median(ends)) / cap
             if not RULE3_END_SOC_RANGE[0] <= end_soc <= RULE3_END_SOC_RANGE[1]:
-                raise ValueError(f"{b}: 规则 3 修正后末尾 SOC {end_soc * 100:.2f} % 不在 5-12 % 内，需要重新确认")
-        caps[b] = {"capacity_Ah": cap, "rule": "3" if b != "567" else "3（规则 2 未通过）", "folder": folder,
-                   "source": f"{why}：{ref} 的 {c_ref:.4f} Ah 按老化修正 {cum[target] - cum[ref_key]:+.1f} Ah",
+                raise ValueError(f"{b}: final SOC after the rule-3 correction {end_soc * 100:.2f} % is not within 5-12 %, confirm again")
+        caps[b] = {"capacity_Ah": cap, "rule": "3" if b != "567" else "3 (rule 2 failed)", "folder": folder,
+                   "source": f"{why}: {c_ref:.4f} Ah of {ref} with an aging correction of {cum[target] - cum[ref_key]:+.1f} Ah",
                    "before_correction_Ah": c_ref, "delta_Ah": cum[target] - cum[ref_key], "rate_per_Ah": r_pool}
-    # 特性测试文件：逐个文件按开始时刻修正
+    # characterisation files: corrected file by file according to their start time
     file_caps = {}
     for b, ref in CHAR_REFERENCE.items():
         folder = caps[ref]["folder"]
@@ -375,16 +375,16 @@ def compute_capacities(summ):
             name = f"{b}_{kind}"
             c = aged(caps[ref]["capacity_Ah"], cum[ref_key], cum[name], rate)
             file_caps[(folder, name)] = {
-                "capacity_Ah": c, "rule": "特性测试（借用 + 老化修正）", "folder": folder,
-                "source": f"借用 {ref} 的 {caps[ref]['capacity_Ah']:.4f} Ah，按 {cum[ref_key] - cum[name]:.1f} Ah 老化修正"
-                          f"（速率 {rate * 100:.4f} %/Ah{'，只来自 610/611 一对' if folder == 'n20degC' else ''}）",
+                "capacity_Ah": c, "rule": "characterisation test (borrowed + aging correction)", "folder": folder,
+                "source": f"borrowed {caps[ref]['capacity_Ah']:.4f} Ah of {ref}, aging correction for {cum[ref_key] - cum[name]:.1f} Ah"
+                          f" (rate {rate * 100:.4f} %/Ah{', from the 610/611 pair only' if folder == 'n20degC' else ''})",
                 "before_correction_Ah": caps[ref]["capacity_Ah"], "delta_Ah": cum[name] - cum[ref_key], "rate_per_Ah": rate}
     return caps, file_caps, checks, aging, ev
 
 
-# ================================================================ 第二遍：清洗、拆段
+# ================================================================ pass 2: cleaning and splitting
 def blocks_of(raw, summary):
-    """[(block, row_index_array, excluded, reason)]。block: main / tail / attempt1；另返回被丢弃的标记行数。"""
+    """[(block, row_index_array, excluded, reason)]. block: main / tail / attempt1; also returns the number of dropped marker rows."""
     df, kind = raw["df"], summary["test_type"]
     n, key = len(df), (raw["folder"], raw["name"])
     markers = df["status"].to_numpy() == "STO"
@@ -392,12 +392,12 @@ def blocks_of(raw, summary):
         resumed = (df["ts_local"] >= LA92_582_RESUME_LOCAL).to_numpy()
         return [("main", np.where(resumed)[0], False, None),
                 ("attempt1", np.where(~resumed)[0], True,
-                 "11/25 第一次运行约 103 s 后过压（4.2345 V）停机，暂停 13.2 h；记录器把这段数据重复写入并插在后面")], 0
+                 "first run on 11/25 stopped on over-voltage (4.2345 V) after about 103 s, then a 13.2 h pause; the logger wrote this data again and inserted it later")], 0
     if kind in TAIL_TYPES and "tail_first" in summary:
         a, z = summary["tail_first"], summary["tail_last"]
-        dropped = n - (z + 1)  # NN_Char_Charge 之后的程序结束行（Ah 计数器清零）
+        dropped = n - (z + 1)  # program-end rows after NN_Char_Charge (Ah counter reset)
         return [("main", np.arange(0, a), False, None),
-                ("tail", np.arange(a, z + 1), True, "测试结束后的升温 -> 1C 充电 -> 降温段（Procedure = NN_Char_Charge）")], dropped
+                ("tail", np.arange(a, z + 1), True, "warm up -> 1C charge -> cool down part after the test (Procedure = NN_Char_Charge)")], dropped
     keep = np.where(~markers)[0]
     return [("main", keep, key in EXCLUDE or kind == "charge",
              EXCLUDE[key][1] if key in EXCLUDE else (CHARGE_EXCLUSION[1] if kind == "charge" else None))], int(markers.sum())
@@ -414,7 +414,7 @@ def clean_rows(df, idx, sort=False):
     n_dup = int((~keep).sum())
     idx = idx[keep]
     if len(idx) > 1 and not np.all(np.diff(t[idx]) > 0):
-        raise ValueError("清洗后 ProgTime 不是严格递增")
+        raise ValueError("ProgTime is not strictly increasing after cleaning")
     return idx, n_nan, n_dup
 
 
@@ -426,14 +426,14 @@ def split_rows(df, idx, nominal):
     cut = np.where((dtp > lim) | (dtw > lim))[0] + 1
     info = [{"split_before_raw_row": int(idx[k]), "dt_progtime_s": round(float(dtp[k - 1]), 3),
              "dt_timestamp_s": float(dtw[k - 1]),
-             "reason": ("隐藏暂停（ProgTime 连续，时间戳跳过 %.1f h）" % (dtw[k - 1] / 3600)) if dtp[k - 1] <= lim[k - 1]
-             else ("记录断档 %.1f s" % dtp[k - 1])} for k in cut]
+             "reason": ("hidden pause (ProgTime continuous, time stamp jumps %.1f h)" % (dtw[k - 1] / 3600)) if dtp[k - 1] <= lim[k - 1]
+             else ("logging gap %.1f s" % dtp[k - 1])} for k in cut]
     bounds = np.r_[0, cut, len(idx)]
     return list(zip(bounds[:-1], bounds[1:])), info
 
 
 def dis0p5c_start_soc(summ, folder, batch, cap):
-    """选项 B：Dis_0p5C 的起始 SOC 由尾段 Ah 平衡反推，以同温度 Dis_2C 尾段的偏差为基准。"""
+    """Option B: the start SOC of Dis_0p5C is back-calculated from the Ah balance of the tail part, using the offset of the same-temperature Dis_2C tail as reference."""
     a = summ[(folder, f"{batch}_Dis_0p5C")]
     if "tail_first" not in a:
         return 1.0, None
@@ -449,7 +449,7 @@ def series_stats(df, idx, nominal_T, excluded_kind=None):
     act = np.isin(st, ["DCH", "TABLE"])
     Ta = T[act] if act.any() else T
     if excluded_kind in ("tail", "charge"):
-        check = "n/a（按设计在 22-25 degC 充电）"
+        check = "n/a (charged at 22-25 degC by design)"
     else:
         check = "pass" if abs(float(Ta.min()) - nominal_T) <= TEMP_TOLERANCE_C else "fail"
     dts = np.diff(sub["t"].to_numpy())
@@ -474,14 +474,14 @@ def write_csv(path, frame):
     with open(path, "w", newline="") as f:
         f.write(",".join(cols) + "\n")
         np.savetxt(f, arr, fmt=[fmt for _, fmt in COLUMN_SPEC], delimiter=",")
-    if np.isnan(arr[:, 4]).any():  # 留空的 soc
+    if np.isnan(arr[:, 4]).any():  # empty soc
         with open(path, "r") as f:
             text = f.read()
         with open(path, "w", newline="") as f:
             f.write(text.replace(",nan,", ",,"))
 
 
-# ================================================================ 主流程
+# ================================================================ main flow
 def _clear_outputs(out_dir):
     for top in [out_dir, os.path.join(out_dir, "_excluded")]:
         for folder in TEMPS:
@@ -495,23 +495,23 @@ def _clear_outputs(out_dir):
 def run(out_dir=OUT_DIR, raw_root=RAW_ROOT, verbose=True):
     log = print if verbose else (lambda *a, **k: None)
     files = list_raw_files(raw_root)
-    log(f"原始 CSV：{len(files)} 个")
+    log(f"Raw CSV files: {len(files)}")
 
-    # ---- 第一遍
+    # ---- pass 1
     summ = {}
     for folder, name in files:
         raw = read_raw(folder, name, raw_root)
         summ[(folder, name)] = summarize(raw)
         summ[(folder, name)]["md5"] = file_md5(raw["path"])
     caps, file_caps, checks, aging, events = compute_capacities(summ)
-    log(f"老化速率：合并 {aging['rate_pooled_per_Ah'] * 100:.4f} %/Ah，-20 degC {aging['rate_n20degC_per_Ah'] * 100:.4f} %/Ah")
+    log(f"Aging rate: pooled {aging['rate_pooled_per_Ah'] * 100:.4f} %/Ah, -20 degC {aging['rate_n20degC_per_Ah'] * 100:.4f} %/Ah")
 
     def capacity_of(folder, name, batch):
         if (folder, name) in file_caps:
             return file_caps[(folder, name)]
         return caps.get(batch)
 
-    # ---- 第二遍
+    # ---- pass 2
     _clear_outputs(out_dir)
     series, raw_records = [], []
     for folder, name in files:
@@ -523,14 +523,14 @@ def run(out_dir=OUT_DIR, raw_root=RAW_ROOT, verbose=True):
         blocks, n_marker = blocks_of(raw, s)
         cap = capacity_of(folder, name, batch)
         key = (folder, name)
-        # soc 基准
-        soc_anchor, ah_anchor, anchor_note = 1.0, 0.0, "测试开始时充满（24 degC 下 1C 充电至 4.2 V / 50 mA），soc = 1"
+        # soc reference point
+        soc_anchor, ah_anchor, anchor_note = 1.0, 0.0, "fully charged at the start of the test (1C charge to 4.2 V / 50 mA at 24 degC), soc = 1"
         if kind == "Dis_0p5C":
             ah_anchor = s["anchor_ah"]
             soc_anchor, deficit = dis0p5c_start_soc(summ, folder, batch, cap["capacity_Ah"])
-            anchor_note = ("放电开始时的 Ah 计数值接着 C/20 测试，没有清零；" +
-                           ("起始 SOC = %.4f，按尾段 Ah 平衡反推（比充满少 %.4f Ah，以同温度 Dis_2C 尾段为基准）"
-                            % (soc_anchor, deficit) if deficit is not None else "25 degC 没有尾段，起始 SOC 记为 1"))
+            anchor_note = ("the Ah counter at the start of the discharge continues from the C/20 test, not reset; " +
+                           ("start SOC = %.4f, back-calculated from the Ah balance of the tail part (%.4f Ah below full, with the same-temperature Dis_2C tail as reference)"
+                            % (soc_anchor, deficit) if deficit is not None else "no tail part at 25 degC, start SOC set to 1"))
         test_end_soc = None
         out_ids = []
         for bname, idx, excluded, reason in blocks:
@@ -544,19 +544,19 @@ def run(out_dir=OUT_DIR, raw_root=RAW_ROOT, verbose=True):
                 c, cap_rule, cap_source = cap["capacity_Ah"], cap["rule"], cap["source"]
                 cap_before = cap.get("before_correction_Ah")
                 soc_block = test_end_soc + (ah - ah[0]) / c
-                soc_rule = "接着测试结束时的 SOC 往下算（尾段开始时 Ah 计数器已清零）：soc_end_of_test + (ah - ah[0]) / 满容量"
+                soc_rule = "continues from the SOC at the end of the test (Ah counter reset at the start of the tail): soc_end_of_test + (ah - ah[0]) / full capacity"
             elif excluded and (kind == "charge" or (key not in EXCLUDED_SOC and bname != "attempt1")):
                 soc_block = np.full(len(idx), np.nan)
-                soc_rule = "留空（起始 SOC 或当时的满容量无法确定）"
+                soc_rule = "empty (start SOC or full capacity at that time cannot be determined)"
             elif excluded:
                 how = ("batch", "582") if bname == "attempt1" else EXCLUDED_SOC[key]
                 if how[0] == "batch":
                     c, cap_rule, cap_source = caps[how[1]]["capacity_Ah"], caps[how[1]]["rule"], caps[how[1]]["source"]
-                    soc_rule = f"1 + ah / {c:.4f}（{how[1]} 批次的满容量）"
+                    soc_rule = f"1 + ah / {c:.4f} (full capacity of batch {how[1]})"
                 else:
-                    c, cap_rule = -s["ah_min"], "文件自己测出的容量"
-                    cap_source = "本文件自己测出的 1C 容量（在错误温度下），与主数据集不是同一把尺子"
-                    soc_rule = f"1 + ah / {c:.4f}（文件自己测出的容量；与主数据集不是同一把尺子）"
+                    c, cap_rule = -s["ah_min"], "capacity measured in the file itself"
+                    cap_source = "1C capacity measured in this file itself (at the wrong temperature); not the same yardstick as the main data set"
+                    soc_rule = f"1 + ah / {c:.4f} (capacity measured in the file itself; not the same yardstick as the main data set)"
                 soc_block = 1 + ah / c
             else:
                 c, cap_rule, cap_source = cap["capacity_Ah"], cap["rule"], cap["source"]
@@ -579,15 +579,15 @@ def run(out_dir=OUT_DIR, raw_root=RAW_ROOT, verbose=True):
                                   ("charge" if kind == "charge" else None))
                 notes = [NOTE_575 if n_ == "575" else n_ for n_ in FILE_NOTES.get(key, [])]
                 if kind == "C20DisCh":
-                    notes.append("C/20 充电段按 Ah 累计的 SOC 与放电段不闭合：本文件充电 Ah 是放电 Ah 的 %.1f %%，"
-                                 "充电结束时 soc = %.4f；推测是 0.15 A 小电流下约 20 h 的电流零点偏移累积，原样保留"
+                    notes.append("the Ah-counted SOC of the C/20 charge does not close with the discharge: the charged Ah of this file is %.1f %% of the discharged Ah, "
+                                 "soc = %.4f at the end of the charge; probably an accumulated current offset over about 20 h at the small current of 0.15 A; kept as is"
                                  % (s["Ah_charged"] / s["Ah_discharged"] * 100, soc_block[-1]))
                 if kind == "Dis_0p5C" and bname == "main":
                     notes.append(anchor_note)
                 if name == "582_LA92" and bname == "main":
-                    notes.append("只保留 13.2 h 暂停后恢复运行的数据（2018-11-26 10:11:10 起）；文件名和表头日期是 11/25 的第一次运行")
+                    notes.append("only the data resumed after the 13.2 h pause are kept (from 2018-11-26 10:11:10); the file name and header date belong to the first run on 11/25")
                 if split_info:
-                    notes.append("按断档拆段：" + "；".join(f"第 {x['split_before_raw_row']} 行前，{x['reason']}" for x in split_info))
+                    notes.append("split at logging gaps: " + "; ".join(f"before row {x['split_before_raw_row']}, {x['reason']}" for x in split_info))
                 entry = {
                     "id": f"{'_excluded/' if excluded else ''}{folder}/{sid}", "file": rel.replace(os.sep, "/"),
                     "excluded": bool(excluded), "exclusion_reason": reason if excluded else None,
@@ -621,9 +621,9 @@ def run(out_dir=OUT_DIR, raw_root=RAW_ROOT, verbose=True):
                             "exclusion_class": EXCLUDE[key][0] if key in EXCLUDE else ("-" if kind == "charge" else None),
                             "exclusion_reason": EXCLUDE[key][1] if key in EXCLUDE else (CHARGE_EXCLUSION[1] if kind == "charge" else None),
                             "output_series": out_ids})
-    log(f"写出序列：主数据集 {sum(not x['excluded'] for x in series)} 条，_excluded {sum(x['excluded'] for x in series)} 条")
+    log(f"Series written: main data set {sum(not x['excluded'] for x in series)}, _excluded {sum(x['excluded'] for x in series)}")
 
-    # ---- 时间线
+    # ---- timeline
     tl = []
     rec_by = {(r["folder"], r["name"]): r for r in raw_records}
     for (folder, name), s in summ.items():
@@ -643,7 +643,7 @@ def run(out_dir=OUT_DIR, raw_root=RAW_ROOT, verbose=True):
             "output_series": ";".join(r["output_series"]), "source_md5": s["md5"]})
     tl = pd.DataFrame(tl).sort_values(["start_utc", "end_utc"]).reset_index(drop=True)
     tl.insert(0, "order", np.arange(1, len(tl) + 1))
-    tl.to_csv(os.path.join(out_dir, "file_timeline.csv"), index=False, float_format="%.4f", encoding="utf-8-sig")
+    tl.to_csv(os.path.join(out_dir, "file_timeline.csv"), index=False, float_format="%.4f", encoding="utf-8")
 
     # ---- manifest
     cap_table = []
@@ -654,11 +654,11 @@ def run(out_dir=OUT_DIR, raw_root=RAW_ROOT, verbose=True):
                                                                           for k, v in cinfo.items()}})
     manifest = {
         "generated_by": "src/preprocess_kollmeyer.py", "raw_root": raw_root,
-        "columns": {"time_s": "s，从该序列第一行起算（ProgTime）", "voltage": "V，端电压", "current": "A，放电为负、充电为正",
-                    "temperature": "degC，电池表面温度（AD592）", "soc": "0-1 的小数；定义见 soc_rule",
-                    "ah": "测试仪原始累计 Ah（Capacity 列），只作标签参考，不能作为模型输入"},
-        "soc_definition": "soc = 1 - 放出的 Ah / 满容量；满容量 = 该批次在实际测试温度下的 1C 容量（统一规则），"
-                          "与 Kollmeyer 示例用的标称 3.0 Ah 不同",
+        "columns": {"time_s": "s, counted from the first row of the series (ProgTime)", "voltage": "V, terminal voltage", "current": "A, negative for discharge, positive for charge",
+                    "temperature": "degC, cell surface temperature (AD592)", "soc": "fraction 0-1; definition in soc_rule",
+                    "ah": "raw cumulative Ah of the tester (Capacity column), only a reference for the label, never a model input"},
+        "soc_definition": "soc = 1 - discharged Ah / full capacity; full capacity = the batch's 1C capacity at the actual test temperature (one rule set), "
+                          "different from the nominal 3.0 Ah used in the Kollmeyer example",
         "aging_model": {**{k: v for k, v in aging.items()}, "missing_tests": [
             {"id": m[0], "time_local_EST": m[1], "Ah_discharged_estimate": m[2], "basis": m[3]} for m in MISSING_TESTS]},
         "rule2_checks": checks, "capacities": cap_table, "raw_files": raw_records, "series": series,
@@ -670,7 +670,7 @@ def run(out_dir=OUT_DIR, raw_root=RAW_ROOT, verbose=True):
 
 
 def tables(result):
-    """notebook 用的汇总表：满容量、规则 2 检验、收录/排除、拆段、温度核对。"""
+    """Summary tables for the notebook: full capacity, rule 2 checks, included/excluded, splits, temperature checks."""
     m = result["manifest"]
     S = pd.DataFrame(m["series"])
     cap = pd.DataFrame(m["capacities"])

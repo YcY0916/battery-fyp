@@ -1,343 +1,343 @@
-# Kollmeyer LG 18650HG2 数据清洗报告（v2）
+# Kollmeyer LG 18650HG2 data cleaning report (v2)
 
-- 生成日期：2026-09-28
-- 代码：`src/preprocess_kollmeyer.py`（所有人工决定都以常量形式写在文件开头）
-- 运行记录：`notebooks/01_preprocess_kollmeyer.ipynb`
-- 逐文件记录：`manifest.json`（每条序列的来源、测试类型、批次、满容量及来源、删掉的行数、拆段、采样间隔、原始起止时间等）
-- 总时间线：`file_timeline.csv`（208 个原始文件按实际时间排序）
+- Date: 2026-09-28
+- Code: `src/preprocess_kollmeyer.py` (every manual decision is written as a constant at the top of the file)
+- Run record: `notebooks/01_preprocess_kollmeyer.ipynb`
+- Per-file record: `manifest.json` (source, test type, batch, full capacity and its source, dropped rows, splits, logging interval, original start and end times of every series)
+- Overall timeline: `file_timeline.csv` (the 208 raw files in real time order)
 
-本报告逐条列出每一个数据处理决定（D1、D2……）和它的原因，可以直接改写进毕业设计报告。
+This report lists every data-processing decision (D1, D2, ...) with its reason, so it can be rewritten directly into the thesis.
 
 ---
 
-## 0. 结果概要
+## 0. Summary
 
-| 项目 | 数量 |
+| Item | Count |
 |---|---|
-| 原始 CSV | 208 个（6 个温度文件夹） |
-| 收录的原始文件 | 100 个 → 主数据集 102 条序列（2 个文件按断档拆成两段），4,789,846 行，251 MB |
-| 排除的原始文件 | 108 个（98 个 Charge + 10 个有问题的测试） |
-| `_excluded/` | 129 条序列（108 个排除文件、15 段截掉的"升温→充电→降温"尾段、582_LA92 的第一次运行），159,091 行，7 MB |
+| Raw CSV files | 208 (6 temperature folders) |
+| Raw files included | 100 -> main data set of 102 series (2 files split in two at logging gaps), 4,789,846 rows, 251 MB |
+| Raw files excluded | 108 (98 Charge files + 10 faulty tests) |
+| `_excluded/` | 129 series (the 108 excluded files, 15 removed "warm up -> charge -> cool down" tails, the first run of 582_LA92), 159,091 rows, 7 MB |
 
-每条序列是一段独立的时间序列，列为 `time_s, voltage, current, temperature, soc, ah`。没有切窗口、没有标准化、没有划分训练/测试集，也没有重采样。这些都留到各个模型阶段（EKF、CNN、LSTM、Transformer）按各自需要再做。
+Every series is an independent time series with the columns `time_s, voltage, current, temperature, soc, ah`. No windowing, no normalisation, no train/test split and no resampling were done. These are left to the model stages (EKF, CNN, LSTM, Transformer), each as it needs.
 
 ---
 
-## 1. 数据来源与读取
+## 1. Data source and reading
 
-**D1. 数据集。** 使用 McMaster 大学 Kollmeyer 等人公开的 LG 18650HG2（标称 3 Ah）数据集，原始数据放在 D 盘，只读不改。测试设备为 Digatron 75 A 通道（电压、电流精度为满量程的 0.1 %），温度由贴在电池中部表面的 AD592 传感器测得（±1 °C）。208 个 CSV 中有 204 个的表头写着同一颗电池（LG HG2 18650_SN62A4）；另外 4 个（575 批次）的例外见 D35。
+**D1. Data set.** The public LG 18650HG2 (nominal 3 Ah) data set of Kollmeyer et al., McMaster University. The raw data are on drive D and are only read, never changed. Test equipment: a Digatron 75 A channel (voltage and current accuracy 0.1 % of full scale); temperature from an AD592 sensor on the middle of the cell surface (±1 °C). 204 of the 208 CSV headers name the same cell (LG HG2 18650_SN62A4); the exception of the other 4 (batch 575) is in D43.
 
-**D2. 测试类型与文件数。**
+**D2. Test types and file counts.**
 
-| 测试类型 | −20 °C | −10 °C | 0 °C | 10 °C | 25 °C | 40 °C | 合计 |
+| Test type | −20 °C | −10 °C | 0 °C | 10 °C | 25 °C | 40 °C | Total |
 |---|---|---|---|---|---|---|---|
-| 驾驶工况（UDDS / HWFET / LA92 / US06） | 4 | 4 | 4 | 4 | 4 | 4 | 24 |
-| Mixed1-8（四种工况随机混合） | 8 | 8 | 7 | 7 | 8 | 8 | 46 |
-| Cap_1C（1C 容量测试） | 2 | 2 | 1 | 2 | 2 | 1 | 10 |
-| C20DisCh（C/20 放电 + C/20 充电） | 1 | 1 | 1 | 1 | 1 | 1 | 6 |
-| Dis_0p5C / Dis_2C（0.5C、2C 恒流放电） | 2 | 2 | 2 | 2 | 2 | 2 | 12 |
-| HPPC（脉冲） | 1 | 1 | 1 | 1 | 1 | 1 | 6 |
-| PausCycl（UDDS 曲线的前 18-36 分钟，见 D37） | 1 | 1 | 1 | 1 | 1 | 1 | 6 |
-| Charge（两次测试之间的 1C 充电） | 16 | 19 | 15 | 14 | 17 | 17 | 98 |
-| 合计 | 35 | 38 | 32 | 32 | 36 | 35 | 208 |
+| Drive cycles (UDDS / HWFET / LA92 / US06) | 4 | 4 | 4 | 4 | 4 | 4 | 24 |
+| Mixed1-8 (random mix of the four cycles) | 8 | 8 | 7 | 7 | 8 | 8 | 46 |
+| Cap_1C (1C capacity test) | 2 | 2 | 1 | 2 | 2 | 1 | 10 |
+| C20DisCh (C/20 discharge + C/20 charge) | 1 | 1 | 1 | 1 | 1 | 1 | 6 |
+| Dis_0p5C / Dis_2C (0.5C, 2C constant-current discharge) | 2 | 2 | 2 | 2 | 2 | 2 | 12 |
+| HPPC (pulses) | 1 | 1 | 1 | 1 | 1 | 1 | 6 |
+| PausCycl (the first 18-36 minutes of the UDDS profile, see D26) | 1 | 1 | 1 | 1 | 1 | 1 | 6 |
+| Charge (1C charge between two tests) | 16 | 19 | 15 | 14 | 17 | 17 | 98 |
+| Total | 35 | 38 | 32 | 32 | 36 | 35 | 208 |
 
-**D3. 实际测试顺序。** 按时间戳排出的实际顺序是 25 °C（10/25-10/31）→ 40 °C（11/02-11/08）→ 10 °C（11/12-11/26）→ 0 °C（11/26-12/02）→ −10 °C（12/04-12/19）→ −20 °C（12/21-12/26），全部在 2018 年。Readme 写的是 40 °C 在 25 °C 之前，与数据不符。因为全程只用了一颗电池，所以每个温度下测得的容量同时反映了温度和老化（到最后一次容量测试，累计放电约 276 Ah）。
+**D3. Real test order.** Sorted by time stamp the real order is 25 °C (10/25-10/31) -> 40 °C (11/02-11/08) -> 10 °C (11/12-11/26) -> 0 °C (11/26-12/02) -> −10 °C (12/04-12/19) -> −20 °C (12/21-12/26), all in 2018. The Readme puts 40 °C before 25 °C, which does not match the data. Because a single cell was used throughout, the capacity measured at each temperature reflects both temperature and aging (about 276 Ah discharged in total by the last capacity test).
 
-**D4. CSV 格式。** 208 个文件的格式都已逐个核对：第 1-28 行是说明，第 29 行是列名，第 30 行是单位，第 31 行起是数据。使用的列：ProgTime（从程序开始计的时间）、Time Stamp（实际日期时间，精度 1 s）、Step、Status、StepTime、Procedure、Voltage、Current、Temperature、Capacity。
+**D4. CSV format.** The format of all 208 files was checked one by one: rows 1-28 are a description, row 29 the column names, row 30 the units, data from row 31. Columns used: ProgTime (time since program start), Time Stamp (real date and time, 1 s resolution), Step, Status, StepTime, Procedure, Voltage, Current, Temperature, Capacity.
 
-**D5. 时间戳。**
-- 正好午夜的 Time Stamp 只记了日期（9 个文件共 73 行），读取时补为 0 点。
-- 测试仪的 Time Stamp 等于"程序开始时的系统时间 + 实际经过时间"，所以 2018-11-04 夏令时结束之前启动的程序（25 °C 全部，以及 40 °C 的 555）按 EDT（UTC−4）记录，之后启动的按 EST（UTC−5）记录。555 和 556 在表面上重叠 1 小时，就是这个原因；换算成 UTC 后两者相隔 18 s。
-- manifest 和时间线同时给出原始记录的当地时间和 UTC 时间。
+**D5. Time stamps.**
+- A Time Stamp exactly at midnight carries only the date (73 rows in 9 files); it is completed with 0 h when read.
+- The tester's Time Stamp equals "system time at program start + real elapsed time", so programs started before the end of daylight saving time on 2018-11-04 (all of 25 °C, and 555 at 40 °C) are recorded in EDT (UTC−4), later ones in EST (UTC−5). This is why 555 and 556 seem to overlap by 1 hour; converted to UTC they are 18 s apart.
+- The manifest and the timeline give both the local time of the original record and UTC.
 
 ---
 
-## 2. 输出格式
+## 2. Output format
 
-**D6. 每条序列存为一个 CSV 文件。** 原因如下：
-- EKF 可能用 MATLAB 或 Python 实现，神经网络用 Python，CSV 在所有工具里都能直接读。
-- 列名写在表头里，用 Excel 打开就能人工检查（最大的文件约 16 万行，没有超过 Excel 的行数上限）。
-- 写出时保留原始精度，不损失信息：时间 3 位小数，电压、电流、温度、ah 各 5 位，soc 6 位。
-- 缺点是体积较大、读取比二进制慢。全部读一遍只要几秒，模型阶段需要时可以再缓存成 npy 或 pt。Parquet 需要额外安装 pyarrow，为了不改动环境没有采用。
+**D6. One CSV file per series.** Reasons:
+- The EKF may be written in MATLAB or Python and the neural networks in Python; every tool reads CSV directly.
+- The column names are in the header and the files open in Excel for manual checks (the largest file has about 160,000 rows, below Excel's row limit).
+- Written with the original precision, no information lost: time 3 decimals, voltage, current, temperature and ah 5 decimals each, soc 6 decimals.
+- Drawback: larger and slower to read than binary. Reading everything takes only a few seconds; model stages can cache npy or pt files if needed. Parquet needs pyarrow, which was not installed to keep the environment unchanged.
 
-**D7. 列定义。**
+**D7. Columns.**
 
-| 列 | 单位 | 说明 |
+| Column | Unit | Description |
 |---|---|---|
-| time_s | s | 从该序列第一行起算（由 ProgTime 得到），严格递增 |
-| voltage | V | 端电压 |
-| current | A | 放电为负，充电为正（与原始数据一致） |
-| temperature | °C | 电池表面温度 |
-| soc | 0-1 的小数 | 定义见第 3 节 |
-| ah | Ah | 测试仪的原始累计 Ah（Capacity 列），只对清洗后保留的行 |
+| time_s | s | counted from the first row of the series (from ProgTime), strictly increasing |
+| voltage | V | terminal voltage |
+| current | A | negative for discharge, positive for charge (as in the raw data) |
+| temperature | °C | cell surface temperature |
+| soc | fraction 0-1 | definition in section 3 |
+| ah | Ah | raw cumulative Ah of the tester (Capacity column), for the rows kept after cleaning |
 
-**D8. `ah` 列只能作为标签参考，不能作为模型输入。** 保留它是为了以后换一种 SOC 定义（例如标称 3.0 Ah 或 C/20 容量）时可以直接重算：`soc_新 = soc_anchor + (ah − ah_anchor) / 新满容量`，其中 soc_anchor 和 ah_anchor 记在 manifest 里。ah 本身就是库仑计数的结果，也就是 SOC 标签的来源，把它作为输入等于把答案交给模型。
+**D8. The `ah` column is only a reference for the label and must never be a model input.** It is kept so that the SOC can be recomputed with another definition later (e.g. the nominal 3.0 Ah or the C/20 capacity): `soc_new = soc_anchor + (ah − ah_anchor) / new full capacity`, with soc_anchor and ah_anchor stored in the manifest. ah itself is the result of Coulomb counting, i.e. the source of the SOC label; using it as an input would hand the answer to the model.
 
-**D9. 文件命名与目录。**
-- 主数据集：`<温度>/<原文件名>.csv`，按断档拆段时加 `_part1`、`_part2`。
-- 排除的数据：`_excluded/<温度>/...`。截掉的尾段叫 `<原文件名>_tail.csv`，582 的第一次运行叫 `582_LA92_attempt1_partK.csv`。
-- manifest.json 里每条序列都有 `excluded: true/false`，排除的还有 `exclusion_reason` 和 `exclusion_class`（a、b、c，见 D29）。
-
----
-
-## 3. SOC 定义
-
-**D10. SOC 的计算方法。** `soc = soc_anchor + (ah − ah_anchor) / 满容量`。
-- 每个测试开始前，电池都在 24 °C 左右以 1C 充到 4.2 V / 50 mA，所以一般取 soc_anchor = 1，ah_anchor = 0（测试开始时 Ah 计数器为 0）。
-- 例外有两个：Dis_0p5C 见 D14；582_LA92 保留部分的第一行已经放电 0.0144 Ah，所以从 99.4 % 开始。
-
-**D11. 满容量的含义。** 满容量取该批次在实际测试温度下的 1C 放电容量（第 4 节）。SOC = 0 的含义是"在该温度下以 1C 放电到 2.8 V"，这是按温度使用该数据集的常见做法。**这与 Kollmeyer 示例脚本不同**：他们的预处理用标称 3.0 Ah 计算 SOC，所以在他们的数据里，−10 °C 工况的 SOC 只降到约 28 %，25 °C 降到约 14 %。与他们的论文结果比较时必须说明这一差异。
-
-**D12. 特性测试的 SOC 可以为负。** HPPC、C/20、0.5C、2C 使用同温度的 1C 满容量（与工况标签是同一把尺子），这样 EKF 可以直接把 C/20 文件的 soc 列当作 OCV-SOC 曲线使用，再对照工况标签，不需要换算。代价是低温下这些测试放电量超过 1C 容量，SOC 会低于 0：
-- C/20 放电末尾：−20 °C 为 −47 %，−10 °C 为 −13 %，0 °C 为 −4.6 %，10 °C 为 −3.5 %，25 °C 为 −1.5 %，40 °C 为 −0.7 %。
-- HPPC 末尾：−20 °C 为 −36 %，40 °C 约为 0 %。
-
-负值表示"已经放掉了比 1C 满容量更多的电"。
-
-**D13. SOC 略超过 100 % 时不截断。** 工况开头如果有能量回收，电流为正，Ah 会略大于 0，SOC 最高到 100.07 %。这是真实的库仑计数结果，截断会破坏 SOC 和电流之间的对应关系。
-
-**D14. Dis_0p5C 的起始 SOC（由 Ah 平衡反推）。** Dis_0p5C 紧接在 C/20 充电之后进行，而那次充电是在测试温度下完成的，不是像其他测试那样在 24 °C 下以 1C 充满。低温下 CV 在 50 mA 截止时，电池并没有真正充满。有两条独立证据：
-- 如果把截掉的 24 °C 再充电段接着算下去，HPPC 和 2C 的尾段结束时在 100.3-101.5 %，而 Dis_0p5C 在 −20 °C 为 107.5 %、−10 °C 为 102.8 %。
-- C/20 充电后的静置电压比 24 °C 充满后低：−20 °C 低 47 mV，−10 °C 低 25 mV，0 °C 低 13 mV。
-
-所以用"Dis_0p5C 尾段 Ah 平衡 − 同温度 Dis_2C 尾段 Ah 平衡"反推开始时少充的电量，得到起始 SOC：
-
-| 温度 | −20 °C | −10 °C | 0 °C | 10 °C | 25 °C | 40 °C |
-|---|---|---|---|---|---|---|
-| 起始 SOC | 93.05 % | 97.63 % | 98.87 % | 99.54 % | 100 %（没有尾段） | 100.14 % |
-
-不确定度约 ±0.5 个百分点，远小于直接记为 100 % 时的偏差（−20 °C 约 7 个百分点）。Dis_0p5C 放电开始时 Ah 计数器没有清零，而是接着 C/20 测试的值，所以 ah_anchor 取放电步骤开始时的 Ah（等于 C/20 文件最后的 Ah）。
-
-**D15. C/20 充电段的 SOC 不闭合，原样保留。** C/20 充电的 Ah 与放电的 Ah 不相等（−20 °C 少 1.7 %；−10、0、10 °C 多 1.5-3.4 %；25、40 °C 多 6.6-6.8 %），所以 C/20 文件结束时 soc 在 0.975-1.069 之间。正常的库仑效率应在 99.5 % 以上，所以这更像是 0.15 A 小电流下约 20 小时的电流零点偏移累积（设备精度为满量程 75 A 的 0.1 %，即 ±75 mA，约 5 mA 的偏移就能解释）。没有修改测量值；如果 EKF 要用充电段，建议分段归一化。
+**D9. File names and folders.**
+- Main data set: `<temperature>/<original file name>.csv`, with `_part1`, `_part2` added when split at a logging gap.
+- Excluded data: `_excluded/<temperature>/...`. A removed tail is called `<original file name>_tail.csv`; the first run of 582 is `582_LA92_attempt1_partK.csv`.
+- Every series in manifest.json has `excluded: true/false`; excluded ones also have `exclusion_reason` and `exclusion_class` (a, b, c, see D29).
 
 ---
 
-## 4. 满容量
+## 3. SOC definition
 
-**D16. 统一规则。** 每个批次的满容量必须来自在该批次实际温度下测得的容量：
-1. **规则 1**：本批次的 Cap_1C 文件存在，并且是在正确温度下测的，就用它。
-2. **规则 2**：本批次的 Cap_1C 文件缺失（测试做过，但没有收录进数据集），就用测试仪的停机容量反推（各工况末尾放出的 Ah ÷ 0.95）。前提是反推值和老化模型的预测相差不超过 ±0.5 %，这个门槛是事先定的。
-3. **规则 3**：本批次的容量被证实是在错误温度下测的，就借用同温度下时间最近的有效容量，再按两次测试之间放出的 Ah 做老化修正。
+**D10. How SOC is computed.** `soc = soc_anchor + (ah − ah_anchor) / full capacity`.
+- Before every test the cell is charged at about 24 °C with 1C to 4.2 V / 50 mA, so in general soc_anchor = 1 and ah_anchor = 0 (the Ah counter is 0 at the start of the test).
+- Two exceptions: Dis_0p5C, see D14; the first kept row of 582_LA92 has already discharged 0.0144 Ah, so it starts at 99.4 %.
 
-**D17. 老化模型。**
-- 容量衰减与时间的关系不一致（按天数算在 0.17-2.4 %/天之间），但与放出的 Ah 成正比。所以模型采用：之后的容量 = 之前的容量 × (1 − 速率 × 期间放出的 Ah)。
-- 速率由同温度、成对的 1C 容量测试标定：25 °C 的 551→552 为 0.0615 %/Ah，−10 °C 的 596→602 为 0.0690 %/Ah，合并后为 **0.0652 %/Ah**，−20 °C 以外的温度都用这个合并速率。
-- −20 °C 的 610→611 为 **0.2592 %/Ah**，明显更大，因为 −20 °C 下 1C 容量主要受电阻限制。这个速率**只来自这一对数据**。
-- 验证：用合并速率预测数据集里缺失的 4 个 Cap_1C（582、590、601、604 的停机容量），误差在 −0.19 % 到 +0.40 % 之间。
-- 累计放电量包括数据集之外、但确实做过的测试，其放电量按估计值计入：556、567、582、590、601、604 的 Cap_1C，以及 567 的 UDDS、HWFET、LA92。依据是程序开始时间与第一个文件之间的时间空档（估计值和依据见 manifest 的 `aging_model.missing_tests`）。
+**D11. Meaning of the full capacity.** The full capacity is the batch's 1C discharge capacity at the actual test temperature (section 4). SOC = 0 means "discharged at 1C to 2.8 V at that temperature", the usual way to use this data set per temperature. **This differs from the Kollmeyer example script**: their preprocessing computes SOC with the nominal 3.0 Ah, so in their data the SOC of the −10 °C drive cycles only falls to about 28 % and at 25 °C to about 14 %. Any comparison with their published results must state this difference.
 
-**D18. 每个批次的满容量和末尾 SOC。**
+**D12. The SOC of characterisation tests can be negative.** HPPC, C/20, 0.5C and 2C use the 1C full capacity of the same temperature (the same yardstick as the drive-cycle labels), so the EKF can use the soc column of the C/20 file directly as the OCV-SOC curve and compare it with the drive-cycle labels without conversion. The price: at low temperature these tests discharge more than the 1C capacity and the SOC falls below 0:
+- end of the C/20 discharge: −47 % at −20 °C, −13 % at −10 °C, −4.6 % at 0 °C, −3.5 % at 10 °C, −1.5 % at 25 °C, −0.7 % at 40 °C;
+- end of HPPC: −36 % at −20 °C, about 0 % at 40 °C.
 
-| 温度 | 批次 | 收录的文件 | 规则 | 满容量 (Ah) | 来源 | 工况末尾 SOC |
+A negative value means "more charge has been removed than the 1C full capacity".
+
+**D13. SOC slightly above 100 % is not clipped.** With regenerative braking at the start of a cycle the current is positive and Ah is slightly above 0; SOC reaches at most 100.07 %. This is the real Coulomb count; clipping would break the link between SOC and current.
+
+**D14. Start SOC of Dis_0p5C (back-calculated from the Ah balance).** Dis_0p5C directly follows the C/20 charge, which was done at the test temperature, not with a 1C charge to full at 24 °C as for the other tests. At low temperature the cell is not really full when the CV phase stops at 50 mA. Two independent pieces of evidence:
+- If the removed 24 °C recharge part is counted on, the HPPC and 2C tails end at 100.3-101.5 %, but Dis_0p5C ends at 107.5 % at −20 °C and 102.8 % at −10 °C.
+- The rest voltage after the C/20 charge is lower than after a full charge at 24 °C: 47 mV lower at −20 °C, 25 mV at −10 °C, 13 mV at 0 °C.
+
+The charge missing at the start is therefore back-calculated as "Ah balance of the Dis_0p5C tail − Ah balance of the same-temperature Dis_2C tail", which gives the start SOC:
+
+| Temperature | −20 °C | −10 °C | 0 °C | 10 °C | 25 °C | 40 °C |
 |---|---|---|---|---|---|---|
-| −20 °C | 610 | UDDS、HWFET、LA92、US06、Mixed1-2、Cap_1C | 1 | 1.6713 | 610_Cap_1C（放电时 −19.8→−15.4 °C） | 5.0 % |
-| −20 °C | 611 | Mixed3-8、Cap_1C、PausCycl | 1 | 1.6172 | 611_Cap_1C（−19.9→−15.6 °C） | 5.0 %（PausCycl 85.0 %） |
-| −10 °C | 596 | UDDS、HWFET、LA92、Cap_1C | 1 | 2.2634 | 596_Cap_1C（−10.1→−6.4 °C） | 5.0 % |
-| −10 °C | 601 | US06、Mixed1-2 | 2 | 2.2419 | 停机容量反推，与预测相差 −0.19 %（参照 602，相隔 9.8 Ah） | 5.0 % |
-| −10 °C | 602 | Mixed4-5、Cap_1C | 1 | 2.2319 | 602_Cap_1C（−10.0→−6.5 °C） | 5.0 % |
-| −10 °C | 604 | Mixed3、Mixed6-8、PausCycl | 2 | 2.2196 | 反推，相差 −0.07 %（参照 602，7.4 Ah） | 5.0 %（PausCycl 85.0 %） |
-| 0 °C | 589 | UDDS、HWFET、LA92、US06、Mixed1-2、Cap_1C | 1 | 2.4734 | 589_Cap_1C（−0.6→2.2 °C） | 5.0 % |
-| 0 °C | 590 | Mixed4-8、PausCycl | 2 | 2.4501 | 反推，相差 +0.35 %（参照 589，19.8 Ah） | 5.0 %（PausCycl 85.0 %） |
-| 10 °C | 567 | US06、Mixed1-2 | 规则 2 未通过，改用规则 3 的做法 | 2.6332 | 576 的 2.5465 按 50.4 Ah 老化修正（见 D19） | 5.8 % |
-| 10 °C | 571 | Mixed4-8、PausCycl | 3 | 2.5953 | 576 的 2.5465 按 28.8 Ah 老化修正（见 D20） | 9.0 %（PausCycl 85.6 %） |
-| 10 °C | 576 | UDDS、HWFET、Cap_1C | 1 | 2.5465 | 576_Cap_1C（9.2→11.0 °C） | 5.0 % |
-| 10 °C | 582 | LA92 | 2 | 2.5421 | 反推，相差 +0.40 %（参照 576，8.7 Ah） | 5.0 %（起点 99.4 %） |
-| 25 °C | 551 | UDDS、LA92、US06、Mixed1-2、Cap_1C | 1 | 2.7264 | 551_Cap_1C（23.9→25.5 °C） | 5.0 % |
-| 25 °C | 552 | Mixed3-8、Cap_1C | 1 | 2.6928 | 552_Cap_1C（23.8→25.5 °C） | 5.0 % |
-| 40 °C | 556 | UDDS、HWFET、LA92、US06、Mixed1-2 | 2（无同温度参照） | 2.6585 | 反推，只做了跨温度检验（见 D21） | 5.0 % |
-| 40 °C | 557 | Mixed3 | 3 | 2.6197 | 556 的 2.6585 按 22.3 Ah 老化修正（见 D20） | 9.3 % |
+| Start SOC | 93.05 % | 97.63 % | 98.87 % | 99.54 % | 100 % (no tail) | 100.14 % |
 
-Cap_1C 文件用本批次自己的容量，所以都从 100 % 放到 0 %。同一批次内各工况的末尾 SOC 相差不超过 0.01 个百分点，因为测试仪都是在同一个 Ah 停机的。
+The uncertainty is about ±0.5 percentage points, much smaller than the error of simply using 100 % (about 7 percentage points at −20 °C). The Ah counter of Dis_0p5C is not reset at the start of the discharge but continues from the C/20 test, so ah_anchor is the Ah at the start of the discharge step (equal to the last Ah of the C/20 file).
 
-**D19. 567 批次。**
-- 567 自己的 Cap_1C 没有收录进数据集，测试仪的停机容量反推为 2.6101 Ah。
-- 按老化模型，从 576_Cap_1C（2.5465 Ah，9.2-11.0 °C 实测）往回推 50.4 Ah，567 当时的容量应为 **2.628-2.638 Ah**（两对标定数据的速率各算一次；中值 2.6332）。
-- **2.6101 比预测值低 0.88 %，超过事先定的 ±0.5 % 门槛，所以没有采用，改用规则 3 的做法取 2.6332 Ah，末尾 SOC 为 5.8 %。** 2.6101 的偏差方向（偏低）和两次冷 Cap_1C（571、557）一致，但那次测试的文件不在数据集里，无法核实它是在什么温度下测的。
-- **不确定范围**：如果改用 2.6101，末尾 SOC 是 5.0 %，所以 567 末尾 SOC 的不确定范围写为 **5.0 %-6.0 %**。
-- 2.5465 比 567 当时的预期容量低 3 % 以上，已经排除。
-- 选择的主要依据是"能否核实"和老化趋势。**静置电压检验区分不了两种可能，不作为依据**：老化会使 1C 容量比 C/20 容量下降得更快，两种假设都能解释 567 的静置电压偏低。
+**D15. The SOC of the C/20 charge does not close; kept as is.** The charged Ah of C/20 differs from the discharged Ah (1.7 % less at −20 °C; 1.5-3.4 % more at −10, 0 and 10 °C; 6.6-6.8 % more at 25 and 40 °C), so the C/20 files end with soc between 0.975 and 1.069. A normal Coulomb efficiency is above 99.5 %, so this looks like an accumulated current offset over about 20 hours at the small current of 0.15 A (the accuracy is 0.1 % of the 75 A full scale, i.e. ±75 mA; an offset of about 5 mA explains it). The measured values were not changed; if the EKF uses the charge part, normalising each part separately is recommended.
 
-**D20. 571 和 557 批次（规则 3）。**
-- 571_Cap_1C 实际在 0.7-3.6 °C 下放电，557_Cap_1C 在放电过程中从 38.4 °C 降到 1.3 °C，都不是所在文件夹的温度，而测试仪却按这两个偏小的容量停机。
-- 571：借用 10 °C 下最近的有效容量 576（2.5465 Ah，相隔 5.5 天、28.8 Ah），按老化修正为 **2.5953 Ah**，末尾 SOC 9.0 %。567 的值没有通过规则 2，不作为参照。
-- 557：借用 40 °C 唯一可用的 556（2.6585 Ah，相隔 1.6 天、22.3 Ah），修正为 **2.6197 Ah**，末尾 SOC 9.3 %。
-- 两者的末尾 SOC 都在事先定的 5-12 % 合理范围内。
+---
 
-**D21. 556 批次：40 °C 没有同温度参照，只做了跨温度检验。**
-- 40 °C 唯一的容量测试 557_Cap_1C 是冷的，所以 556 的反推值 2.6585 Ah 无法按规则 2 的方法检验。
-- 改做跨温度检验：从 552（25 °C，2.6928 Ah）按老化推到 556 当时，得 2.6340 Ah。**假设 40 °C 的 1C 容量比 25 °C 高 0.5 %-1.0 %**，则预期范围为 2.647-2.660 Ah，2.6585 在范围内。
-- 2.6585 是 40 °C 唯一可用的值，予以采用。
+## 4. Full capacity
 
-**D22. 特性测试批次（HPPC、C/20、0.5C、2C）。**
-- 这 6 个批次没有自己的容量测试，也没有停机容量。满容量借用紧接着的那个工况批次的容量，为了和规则 3 一致，再按"该文件开始时刻到参照容量测试之间放出的 Ah"逐个文件做老化修正。
-- −20 °C 用 610/611 那一对标定出的速率 0.2592 %/Ah（**只来自一对数据**），其他温度用合并速率 0.0652 %/Ah。
+**D16. One rule set.** The full capacity of every batch must come from a capacity measured at the batch's actual temperature:
+1. **Rule 1**: the batch's own Cap_1C file exists and was measured at the right temperature -> use it.
+2. **Rule 2**: the batch's Cap_1C file is missing (the test was done but is not in the data set) -> back-calculate from the tester's cutoff capacity (Ah discharged at the end of each cycle / 0.95). Condition: the back-calculated value is within ±0.5 % of the aging-model prediction; this threshold was set beforehand.
+3. **Rule 3**: the batch's capacity is shown to have been measured at the wrong temperature -> borrow the nearest valid capacity at the same temperature, with an aging correction for the Ah discharged between the two tests.
 
-| 温度 | 参照（修正前） | HPPC | C20DisCh | Dis_0p5C | Dis_2C |
+**D17. Aging model.**
+- The capacity fade is not consistent with time (0.17-2.4 %/day) but is proportional to the discharged Ah. The model is therefore: later capacity = earlier capacity × (1 − rate × Ah discharged in between).
+- The rate is calibrated on paired 1C capacity tests at the same temperature: 551 -> 552 at 25 °C gives 0.0615 %/Ah, 596 -> 602 at −10 °C gives 0.0690 %/Ah, pooled **0.0652 %/Ah**, used for every temperature except −20 °C.
+- 610 -> 611 at −20 °C gives **0.2592 %/Ah**, clearly larger, because at −20 °C the 1C capacity is mainly limited by resistance. This rate **comes from this one pair only**.
+- Validation: the pooled rate predicts the 4 missing Cap_1C of the data set (cutoff capacities of 582, 590, 601, 604) with errors between −0.19 % and +0.40 %.
+- The cumulative discharge includes tests that were done but are not in the data set, with estimated discharges: the Cap_1C of 556, 567, 582, 590, 601, 604, and the UDDS, HWFET, LA92 of 567. The basis is the time gap between the program start and the first file (estimates and basis in the manifest under `aging_model.missing_tests`).
+
+**D18. Full capacity and final SOC of every batch.**
+
+| Temperature | Batch | Files included | Rule | Full capacity (Ah) | Source | Final SOC of the cycles |
+|---|---|---|---|---|---|---|
+| −20 °C | 610 | UDDS, HWFET, LA92, US06, Mixed1-2, Cap_1C | 1 | 1.6713 | 610_Cap_1C (−19.8 -> −15.4 °C during discharge) | 5.0 % |
+| −20 °C | 611 | Mixed3-8, Cap_1C, PausCycl | 1 | 1.6172 | 611_Cap_1C (−19.9 -> −15.6 °C) | 5.0 % (PausCycl 85.0 %) |
+| −10 °C | 596 | UDDS, HWFET, LA92, Cap_1C | 1 | 2.2634 | 596_Cap_1C (−10.1 -> −6.4 °C) | 5.0 % |
+| −10 °C | 601 | US06, Mixed1-2 | 2 | 2.2419 | back-calculated from the cutoff capacity, −0.19 % from the prediction (reference 602, 9.8 Ah apart) | 5.0 % |
+| −10 °C | 602 | Mixed4-5, Cap_1C | 1 | 2.2319 | 602_Cap_1C (−10.0 -> −6.5 °C) | 5.0 % |
+| −10 °C | 604 | Mixed3, Mixed6-8, PausCycl | 2 | 2.2196 | back-calculated, −0.07 % (reference 602, 7.4 Ah) | 5.0 % (PausCycl 85.0 %) |
+| 0 °C | 589 | UDDS, HWFET, LA92, US06, Mixed1-2, Cap_1C | 1 | 2.4734 | 589_Cap_1C (−0.6 -> 2.2 °C) | 5.0 % |
+| 0 °C | 590 | Mixed4-8, PausCycl | 2 | 2.4501 | back-calculated, +0.35 % (reference 589, 19.8 Ah) | 5.0 % (PausCycl 85.0 %) |
+| 10 °C | 567 | US06, Mixed1-2 | rule 2 failed, rule 3 used instead | 2.6332 | 2.5465 of 576 with an aging correction for 50.4 Ah (see D19) | 5.8 % |
+| 10 °C | 571 | Mixed4-8, PausCycl | 3 | 2.5953 | 2.5465 of 576 with an aging correction for 28.8 Ah (see D20) | 9.0 % (PausCycl 85.6 %) |
+| 10 °C | 576 | UDDS, HWFET, Cap_1C | 1 | 2.5465 | 576_Cap_1C (9.2 -> 11.0 °C) | 5.0 % |
+| 10 °C | 582 | LA92 | 2 | 2.5421 | back-calculated, +0.40 % (reference 576, 8.7 Ah) | 5.0 % (start 99.4 %) |
+| 25 °C | 551 | UDDS, LA92, US06, Mixed1-2, Cap_1C | 1 | 2.7264 | 551_Cap_1C (23.9 -> 25.5 °C) | 5.0 % |
+| 25 °C | 552 | Mixed3-8, Cap_1C | 1 | 2.6928 | 552_Cap_1C (23.8 -> 25.5 °C) | 5.0 % |
+| 40 °C | 556 | UDDS, HWFET, LA92, US06, Mixed1-2 | 2 (no same-temperature reference) | 2.6585 | back-calculated, cross-temperature check only (see D21) | 5.0 % |
+| 40 °C | 557 | Mixed3 | 3 | 2.6197 | 2.6585 of 556 with an aging correction for 22.3 Ah (see D20) | 9.3 % |
+
+The Cap_1C files use their own batch's capacity, so they all go from 100 % to 0 %. Inside one batch the final SOC of the cycles differs by at most 0.01 percentage points, because the tester always stopped at the same Ah.
+
+**D19. Batch 567.**
+- 567's own Cap_1C is not in the data set; the back-calculated cutoff capacity is 2.6101 Ah.
+- With the aging model, going back 50.4 Ah from 576_Cap_1C (2.5465 Ah, measured at 9.2-11.0 °C), the capacity of 567 at that time should be **2.628-2.638 Ah** (once with the rate of each calibration pair; middle value 2.6332).
+- **2.6101 is 0.88 % below the prediction, beyond the ±0.5 % threshold set beforehand, so it was not used; the rule-3 approach gives 2.6332 Ah and a final SOC of 5.8 %.** The direction of the deviation of 2.6101 (too low) matches the two cold Cap_1C tests (571, 557), but the file of that test is not in the data set, so its temperature cannot be checked.
+- **Uncertainty range**: with 2.6101 the final SOC would be 5.0 %, so the final SOC of 567 is stated as **5.0 %-6.0 %**.
+- 2.5465 is more than 3 % below the expected capacity of 567 at that time and was ruled out.
+- The main grounds for the choice are "can it be checked" and the aging trend. **The rest-voltage check cannot separate the two possibilities and is not used**: aging makes the 1C capacity fall faster than the C/20 capacity, so both hypotheses explain the low rest voltage of 567.
+
+**D20. Batches 571 and 557 (rule 3).**
+- 571_Cap_1C was actually discharged at 0.7-3.6 °C, and during 557_Cap_1C the cell cooled from 38.4 °C to 1.3 °C; neither is at its folder temperature, yet the tester stopped at these too-small capacities.
+- 571: borrows the nearest valid 10 °C capacity, 576 (2.5465 Ah, 5.5 days and 28.8 Ah apart), aging-corrected to **2.5953 Ah**, final SOC 9.0 %. The value of 567 failed rule 2 and is not used as reference.
+- 557: borrows 556, the only usable value at 40 °C (2.6585 Ah, 1.6 days and 22.3 Ah apart), corrected to **2.6197 Ah**, final SOC 9.3 %.
+- Both final SOCs are within the plausible range of 5-12 % set beforehand.
+
+**D21. Batch 556: no same-temperature reference at 40 °C, cross-temperature check only.**
+- The only capacity test at 40 °C, 557_Cap_1C, is cold, so the back-calculated 2.6585 Ah of 556 cannot be checked the rule-2 way.
+- Cross-temperature check instead: from 552 (25 °C, 2.6928 Ah), aged to the time of 556, gives 2.6340 Ah. **Assuming the 1C capacity at 40 °C is 0.5 %-1.0 % above that at 25 °C**, the expected range is 2.647-2.660 Ah; 2.6585 lies inside.
+- 2.6585 is the only usable value at 40 °C and is used.
+
+**D22. Characterisation batches (HPPC, C/20, 0.5C, 2C).**
+- These 6 batches have neither their own capacity test nor a cutoff capacity. The full capacity is borrowed from the drive-cycle batch that follows, and, consistent with rule 3, corrected file by file for the Ah discharged between the file's start and the reference capacity test.
+- −20 °C uses the rate of the 610/611 pair, 0.2592 %/Ah (**from that one pair only**); the other temperatures use the pooled rate of 0.0652 %/Ah.
+
+| Temperature | Reference (before correction) | HPPC | C20DisCh | Dis_0p5C | Dis_2C |
 |---|---|---|---|---|---|
-| −20 °C | 610：1.6713 | 1.7071（8.1 Ah，+2.14 %） | 1.6964（5.7 Ah，+1.50 %） | 1.6853（3.2 Ah，+0.84 %） | 1.6766（1.2 Ah，+0.32 %） |
-| −10 °C | 596：2.2634 | 2.2774（9.4 Ah） | 2.2734（6.8 Ah） | 2.2696（4.2 Ah） | 2.2661（1.9 Ah） |
-| 0 °C | 589：2.4734 | 2.4897（10.1 Ah） | 2.4853（7.3 Ah） | 2.4810（4.7 Ah） | 2.4770（2.3 Ah） |
-| 10 °C | 576：2.5465 | 2.5642（10.6 Ah） | 2.5592（7.6 Ah） | 2.5548（4.9 Ah） | 2.5505（2.4 Ah） |
-| 25 °C | 551：2.7264 | 2.7467（11.3 Ah） | 2.7409（8.1 Ah） | 2.7359（5.3 Ah） | 2.7310（2.6 Ah） |
-| 40 °C | 556：2.6585 | 2.6776（11.0 Ah） | 2.6722（7.9 Ah） | 2.6675（5.2 Ah） | 2.6628（2.5 Ah） |
+| −20 °C | 610: 1.6713 | 1.7071 (8.1 Ah, +2.14 %) | 1.6964 (5.7 Ah, +1.50 %) | 1.6853 (3.2 Ah, +0.84 %) | 1.6766 (1.2 Ah, +0.32 %) |
+| −10 °C | 596: 2.2634 | 2.2774 (9.4 Ah) | 2.2734 (6.8 Ah) | 2.2696 (4.2 Ah) | 2.2661 (1.9 Ah) |
+| 0 °C | 589: 2.4734 | 2.4897 (10.1 Ah) | 2.4853 (7.3 Ah) | 2.4810 (4.7 Ah) | 2.4770 (2.3 Ah) |
+| 10 °C | 576: 2.5465 | 2.5642 (10.6 Ah) | 2.5592 (7.6 Ah) | 2.5548 (4.9 Ah) | 2.5505 (2.4 Ah) |
+| 25 °C | 551: 2.7264 | 2.7467 (11.3 Ah) | 2.7409 (8.1 Ah) | 2.7359 (5.3 Ah) | 2.7310 (2.6 Ah) |
+| 40 °C | 556: 2.6585 | 2.6776 (11.0 Ah) | 2.6722 (7.9 Ah) | 2.6675 (5.2 Ah) | 2.6628 (2.5 Ah) |
 
-括号里是到参照容量测试之间放出的 Ah。−20 °C 以外的修正幅度为 +0.12 % 到 +0.74 %。
+In brackets: the Ah discharged up to the reference capacity test. Except at −20 °C the corrections are +0.12 % to +0.74 %.
 
 ---
 
-## 5. 收录与排除
+## 5. Included and excluded files
 
-**D23. 收录的 100 个原始文件。**
-- −20 °C（19 个）：607 的 HPPC、C20DisCh、Dis_0p5C、Dis_2C；610 的 Cap_1C、UDDS、HWFET、LA92、US06、Mixed1-2；611 的 Cap_1C、Mixed3-8、PausCycl。
-- −10 °C（19 个）：593 的 4 个特性测试；596 的 Cap_1C、UDDS、HWFET、LA92；601 的 US06、Mixed1-2；602 的 Cap_1C、Mixed4-5；604 的 Mixed3、Mixed6-8、PausCycl。
-- 0 °C（17 个）：585 的 4 个特性测试；589 的 Cap_1C、UDDS、HWFET、LA92、US06、Mixed1-2；590 的 Mixed4-8、PausCycl。
-- 10 °C（17 个）：575 的 4 个特性测试；567 的 US06、Mixed1-2；571 的 Mixed4-8、PausCycl；576 的 Cap_1C、UDDS、HWFET；582 的 LA92。
-- 25 °C（17 个）：549 的 4 个特性测试；551 的 Cap_1C、UDDS、LA92、US06、Mixed1-2；552 的 Cap_1C、Mixed3-8。
-- 40 °C（11 个）：555 的 4 个特性测试；556 的 UDDS、HWFET、LA92、US06、Mixed1-2；557 的 Mixed3。
+**D23. The 100 raw files included.**
+- −20 °C (19): HPPC, C20DisCh, Dis_0p5C, Dis_2C of 607; Cap_1C, UDDS, HWFET, LA92, US06, Mixed1-2 of 610; Cap_1C, Mixed3-8, PausCycl of 611.
+- −10 °C (19): the 4 characterisation tests of 593; Cap_1C, UDDS, HWFET, LA92 of 596; US06, Mixed1-2 of 601; Cap_1C, Mixed4-5 of 602; Mixed3, Mixed6-8, PausCycl of 604.
+- 0 °C (17): the 4 characterisation tests of 585; Cap_1C, UDDS, HWFET, LA92, US06, Mixed1-2 of 589; Mixed4-8, PausCycl of 590.
+- 10 °C (17): the 4 characterisation tests of 575; US06, Mixed1-2 of 567; Mixed4-8, PausCycl of 571; Cap_1C, UDDS, HWFET of 576; LA92 of 582.
+- 25 °C (17): the 4 characterisation tests of 549; Cap_1C, UDDS, LA92, US06, Mixed1-2 of 551; Cap_1C, Mixed3-8 of 552.
+- 40 °C (11): the 4 characterisation tests of 555; UDDS, HWFET, LA92, US06, Mixed1-2 of 556; Mixed3 of 557.
 
-**D24. 收录恒流测试和脉冲测试。** Cap_1C、C/20、0.5C、2C 和 HPPC 都保留，因为 EKF 需要用它们辨识 OCV-SOC 曲线和等效电路参数。
+**D24. Constant-current and pulse tests are included.** Cap_1C, C/20, 0.5C, 2C and HPPC are all kept, because the EKF needs them to identify the OCV-SOC curve and the equivalent-circuit parameters.
 
-**D25. 不收录 Charge 文件（98 个）。** 它们是每次测试后的例行 1C 恒流恒压充电，按设计在电池温度 22-25 °C 下进行（与所在文件夹的温度无关），采样间隔 60 s，不属于测试。已清洗后放在 `_excluded/`，soc 留空（见 D30）。
+**D25. The Charge files (98) are not included.** They are the routine 1C constant-current constant-voltage charges after every test, done at a cell temperature of 22-25 °C by design (independent of the folder temperature), with 60 s logging; they are not tests. They are cleaned and stored in `_excluded/` with an empty soc (see D30).
 
-**D26. PausCycl 只收录 4 个。** 电流曲线比对显示，PausCycl 是 UDDS 曲线的前 18-36 分钟：电池从满电放到约 85 %，然后静置 10 分钟。−20、−10、0、10 °C 这 4 个正常，予以收录。25 °C 的 552_PausCycl 和 40 °C 的 562_PausCycl 不收录（见 D29）。
+**D26. Only 4 PausCycl files are included.** Comparing the current profiles shows that PausCycl is the first 18-36 minutes of the UDDS profile: the cell is discharged from full to about 85 %, then rests for 10 minutes. The 4 files at −20, −10, 0 and 10 °C are normal and included. 552_PausCycl at 25 °C and 562_PausCycl at 40 °C are not (see D29).
 
-**D27. 两个冷的 Cap_1C 不收录。** 571_Cap_1C 和 557_Cap_1C 已经不再用于计算满容量（D20），作为时间序列也和所在文件夹的温度不符。
+**D27. The two cold Cap_1C files are not included.** 571_Cap_1C and 557_Cap_1C are no longer used for the full capacity (D20), and as time series they do not match their folder temperature.
 
-**D28. 沿用 v1 已确认的排除项。** 551_HWFET 和 562_Mixed4-8 继续排除，理由见 D29。
+**D28. Exclusions already confirmed in v1 are kept.** 551_HWFET and 562_Mixed4-8 stay excluded; reasons in D29.
 
-**D29. 排除文件的分类。** 分类含义：(a) 放错文件夹，实际属于另一个温度；(b) 测试中止，或记录出错；(c) 数据正常但特殊。
+**D29. Classes of excluded files.** (a) wrong folder, belongs to another temperature; (b) test aborted or logging error; (c) normal but special data.
 
-| 文件 | 分类 | 实际情况和依据 |
+| File | Class | What happened, and the evidence |
 |---|---|---|
-| 551_HWFET（25 °C） | b | 10/29 01:36，前后是 Charge3 和 Charge4。整个文件是 10 分钟静置（电流始终为 0），HWFET 曲线没有执行；之后也没有重做，数据集里没有 25 °C 的 HWFET |
-| 552_PausCycl（25 °C） | b | 10/31，是 25 °C 的最后一个测试。4 次 TABLE 步骤都立即结束，只有 1.6 h 静置和一次 0.015 Ah 的补充充电 |
-| 562_Mixed4-8、562_PausCycl（40 °C 文件夹） | b | 11/07 21:23 至 11/08 20:14，夹在 40 °C 与 10 °C 两组测试之间。前一个文件 557_Charge10 在充电前停机；之后实验舱没有开，电池跟随室温（18.5-25 °C，夜里最低 18.5 °C）。程序从 Charge10 这一步重启、跳过了 Cap_1C，停机容量只有约 0.2 Ah，所以每个 Mixed 只放了 0.19 Ah。曲线确实是 Mixed4-8。温度接近 25 °C 文件夹的实际温度，但当时没有容量测试（距 552_Cap_1C 又放电了 61 Ah），所以不改标为 25 °C 数据 |
-| 571_Cap_1C（10 °C） | a | 11/14 10:06。前后的充电文件都正常，只有这 1 小时实验舱偏冷：电池 50 s 内从 9.2 °C 降到 4.3 °C，放电时 0.7-3.6 °C。实际上是约 1-4 °C 的测试。温度在测试中一直下降，而且比 0 °C 那组早 15 天（期间又放电 54 Ah），不适合当 0 °C 的满容量 |
-| 557_Cap_1C（40 °C） | b | 11/07 10:49。放电过程中电池从 38.4 °C 一路降到 1.3 °C，不在任何恒定温度下，不能重新归类 |
-| 98 个 Charge 文件 | — | 见 D25 |
+| 551_HWFET (25 °C) | b | 10/29 01:36, between Charge3 and Charge4. The whole file is a 10-minute rest (current always 0); the HWFET profile was not executed and was never repeated, so the data set has no HWFET at 25 °C |
+| 552_PausCycl (25 °C) | b | 10/31, the last test at 25 °C. All 4 TABLE steps ended at once; only a 1.6 h rest and one 0.015 Ah top-up charge |
+| 562_Mixed4-8, 562_PausCycl (40 °C folder) | b | 11/07 21:23 to 11/08 20:14, between the 40 °C and 10 °C test groups. The previous file, 557_Charge10, stopped before charging; afterwards the chamber was not switched on and the cell followed room temperature (18.5-25 °C, minimum 18.5 °C at night). The program restarted at the Charge10 step and skipped Cap_1C; the cutoff capacity was only about 0.2 Ah, so each Mixed discharged only 0.19 Ah. The profiles really are Mixed4-8. The temperature is close to the real temperature of the 25 °C folder, but there was no capacity test at that time (61 Ah discharged since 552_Cap_1C), so they are not relabelled as 25 °C data |
+| 571_Cap_1C (10 °C) | a | 11/14 10:06. The charge files before and after are normal; the chamber was cold only during this hour: the cell cooled from 9.2 °C to 4.3 °C within 50 s and discharged at 0.7-3.6 °C, in effect a test at about 1-4 °C. The temperature kept falling during the test, and it is 15 days (54 Ah) before the 0 °C group, so it is unsuitable as the 0 °C full capacity |
+| 557_Cap_1C (40 °C) | b | 11/07 10:49. During the discharge the cell cooled all the way from 38.4 °C to 1.3 °C; not at any constant temperature, cannot be reclassified |
+| 98 Charge files | - | see D25 |
 
-两个冷 Cap_1C 都是 CyclesB 程序的第一步，实验舱只在这一步偏冷，前后都正常，具体原因没有记录。
+Both cold Cap_1C tests are the first step of the CyclesB program; the chamber was cold only in this step and normal before and after. The cause is not recorded.
 
-**D30. 排除的数据仍然清洗后保存。** 存放在 `_excluded/`，列格式相同，保留 ah 列，manifest 里标 `excluded: true` 并写明原因。soc 列只在定义明确时才填：
-- 截掉的尾段：接着测试结束时的 SOC 往下算，结束时在 100.3-101.5 %。
-- 571_Cap_1C、557_Cap_1C：用各自测出的容量，从 100 % 算到 0 %。**注意这与主数据集不是同一把尺子**（manifest 里有注明）。
-- 551_HWFET：全程 100 %。
-- 552_PausCycl：用 552 的满容量，结束时 100.6 %。
-- 582_LA92 第一次运行：用 582 的满容量，从 100 % 开始。
-- 562 的 6 个文件：起点虽然是 100 %，但当时、当地的满容量无法确定，soc 留空。
-- Charge 文件：起始 SOC 不确定，soc 留空。
+**D30. Excluded data are still cleaned and stored.** In `_excluded/`, with the same columns and the ah column; the manifest marks them `excluded: true` with the reason. The soc column is filled only where it is well defined:
+- removed tails: continue from the SOC at the end of the test, ending at 100.3-101.5 %;
+- 571_Cap_1C, 557_Cap_1C: with their own measured capacity, from 100 % to 0 %. **Note: not the same yardstick as the main data set** (stated in the manifest);
+- 551_HWFET: 100 % throughout;
+- 552_PausCycl: with the full capacity of 552, ending at 100.6 %;
+- first run of 582_LA92: with the full capacity of 582, starting at 100 %;
+- the 6 files of 562: the start is 100 %, but the full capacity at that time and place cannot be determined; soc left empty;
+- Charge files: the start SOC is uncertain; soc left empty.
 
 ---
 
-## 6. 清洗步骤
+## 6. Cleaning steps
 
-**D31. 删除空值行。** 删除电压、电流、温度、Ah、ProgTime 中有空值的行。全部 208 个文件里只有 582_LA92 有 3 行空值，而且都落在第一次运行的部分（见 D33），所以主数据集里这条规则实际删掉 0 行，保留它是为了防止以后出错。
+**D31. Rows with empty values are removed.** Rows with an empty voltage, current, temperature, Ah or ProgTime are removed. Of all 208 files only 582_LA92 has 3 such rows, all in the part of the first run (see D33), so in the main data set this rule removes 0 rows; it is kept as a safeguard.
 
-**D32. 删除时间戳重复的行，保留第一条。** 按 ProgTime 判断，只要与上一行相同就删除。
-- 测试仪在每个步骤结束时会多记一行同时间的记录，大多与上一行完全相同。主数据集共删 5,501 行：HPPC 每个约 200 行，工况文件每个 0-2 行。
-- 602_Mixed4 的第 3868-8026 行，是同一条记录被重复写了 4159 次（时间戳、电压、电流完全一样）。这是记录器"冻结"，其后紧接着一个 416 s 的断档；这条规则把冻结记录一并删除。v1 曾把这 4160 行留在 part1 的末尾。
+**D32. Rows with a repeated time stamp are removed; the first is kept.** Judged by ProgTime: a row equal to the previous one is removed.
+- At the end of every step the tester logs an extra row with the same time, mostly identical to the previous row. 5,501 rows are removed from the main data set: about 200 per HPPC file, 0-2 per drive-cycle file.
+- Rows 3868-8026 of 602_Mixed4 are the same record written 4159 times (identical time stamp, voltage, current). This is a "frozen" logger, directly followed by a 416 s gap; this rule removes the frozen records as well. v1 had kept these 4160 rows at the end of part1.
 
-**D33. 582_LA92 只保留暂停后恢复运行的部分。**
-- 这个 LA92 在 11/25 20:59 第一次开始，约 103 s 后因回馈电流使电压达到 4.2345 V 而过压停机，暂停了 13.2 小时，11/26 10:11 才继续。
-- 记录器把 11/25 的数据重复写入，插在 11/26 的数据中间，造成时间倒退和 3 行空值。
-- 处理：只保留 Time Stamp 为 11/26 的行（从 10:11:10 静置 13.2 h 后的状态开始，起始 SOC 99.4 %），共 89,701 行。比 v1 "丢掉前 1945 行"的做法多保留了 907 行（91 s）恢复运行后的正常数据。
-- 11/25 的第一次运行去重后放在 `_excluded/`。这个文件的名字和表头日期是 11/25，但保留下来的 LA92 实际是 11/26 10:11-12:40 跑的。
+**D33. Only the part of 582_LA92 resumed after the pause is kept.**
+- This LA92 first started on 11/25 at 20:59; after about 103 s the regenerative current pushed the voltage to 4.2345 V and the tester stopped on over-voltage. It paused for 13.2 hours and continued on 11/26 at 10:11.
+- The logger wrote the 11/25 data again and inserted them into the 11/26 data, causing time to run backwards and 3 empty rows.
+- Treatment: only rows with an 11/26 Time Stamp are kept (from 10:11:10, the state after the 13.2 h rest, start SOC 99.4 %), 89,701 rows. Compared with v1 ("drop the first 1945 rows") this keeps 907 more rows (91 s) of normal data after the restart.
+- The first run of 11/25, de-duplicated, is in `_excluded/`. The file name and header date of this file are 11/25, but the LA92 kept actually ran on 11/26 from 10:11 to 12:40.
 
-**D34. 截掉 HPPC、0.5C、2C 末尾的"升温 → 1C 充电 → 降温"段。**
-- 除 25 °C 以外，这三类测试结束后，文件里还带着一段：静置约 1 小时让电池升温到约 24 °C，1C 充电，再静置降回测试温度。测试仪把这一段的 Procedure 标为 `NN_Char_Charge`，与测试本身分得很清楚，而且 Ah 计数器在这里清零。
-- 按 Procedure 截断。测试内部的所有静置段都保留。测试程序在最后一次放电之后没有安排静置，放电后的静置已经属于 NN_Char_Charge；这一段的第一个采样点（放电后 60 s）温度就已偏离 1-2.5 °C，5 分钟后偏离 10-20 °C，所以没有"测试温度下的放电后静置"可以保留。
-- 25 °C 的这些测试没有尾段，它们的充电记在 549_Charge 里。
+**D34. The "warm up -> 1C charge -> cool down" part at the end of HPPC, 0.5C and 2C is removed.**
+- Except at 25 °C, after these three test types the file continues with: about 1 hour of rest to warm the cell to about 24 °C, a 1C charge, and a rest to cool back to the test temperature. The tester labels this part with the Procedure `NN_Char_Charge`, clearly separate from the test, and the Ah counter is reset there.
+- The cut is made by Procedure. Every rest inside the test is kept. The test program has no rest after the last discharge; the rest after the discharge already belongs to NN_Char_Charge, and its first sample (60 s after the discharge) is already 1-2.5 °C off the test temperature, 10-20 °C after 5 minutes, so there is no "rest after discharge at the test temperature" to keep.
+- At 25 °C these tests have no tail; their charges are in 549_Charge.
 
-| 文件 | 截断行（数据行号，从 0 起） | 原始 CSV 行号 | 保留部分的结尾 | 截掉的行数 |
+| File | Cut row (data row, from 0) | Raw CSV row | End of the kept part | Rows removed |
 |---|---|---|---|---|
-| 607 / 593 / 585 / 575 / 555_HPPC | 35860 / 39875 / 40008 / 44006 / 44305 | 35891 / 39906 / 40039 / 44037 / 44336 | 最后一次降 SOC 放电到 2.8 V，加 1 行 0 s 静置；之前 610 s 的静置保留 | 207 / 209 / 211 / 213 / 214 |
-| 607 / 593 / 585 / 575 / 555_Dis_0p5C | 81 / 95 / 101 / 107 / 107 | 112 / 126 / 132 / 138 / 138 | 放电段（到 2.8 V） | 202 / 207 / 209 / 211 / 211 |
-| 607 / 593 / 585 / 575 / 555_Dis_2C | 14 / 20 / 24 / 26 / 27 | 45 / 51 / 55 / 57 / 58 | 放电段（到 2.8 V） | 185 / 199 / 206 / 210 / 211 |
+| 607 / 593 / 585 / 575 / 555_HPPC | 35860 / 39875 / 40008 / 44006 / 44305 | 35891 / 39906 / 40039 / 44037 / 44336 | the last SOC-lowering discharge to 2.8 V plus 1 row of 0 s rest; the 610 s rest before it is kept | 207 / 209 / 211 / 213 / 214 |
+| 607 / 593 / 585 / 575 / 555_Dis_0p5C | 81 / 95 / 101 / 107 / 107 | 112 / 126 / 132 / 138 / 138 | the discharge (to 2.8 V) | 202 / 207 / 209 / 211 / 211 |
+| 607 / 593 / 585 / 575 / 555_Dis_2C | 14 / 20 / 24 / 26 / 27 | 45 / 51 / 55 / 57 / 58 | the discharge (to 2.8 V) | 185 / 199 / 206 / 210 / 211 |
 
-截掉的行数包括尾段之后 1 行"程序结束行"（D35）。截掉的尾段保存在 `_excluded/`（D30）。
+The removed rows include 1 "program end row" after the tail (D35). The removed tails are stored in `_excluded/` (D30).
 
-**D35. 去掉程序结束标记行。** 状态为 STO（程序停止）的行，以及尾段之后 Ah 计数器清零的那一行，都是程序的标记，不是测量。一共 23 个文件，每个 1 行，都不在主数据集里（10 个特性测试文件的尾部，13 个 Charge 文件）。
+**D35. Program-end marker rows are removed.** Rows with status STO (program stop) and the row after a tail where the Ah counter is reset are program markers, not measurements. 23 files have one each; none is in the main data set (the ends of 10 characterisation files and of 13 Charge files).
 
-**D36. 按断档拆段。**
-- 规则：ProgTime 或换算成 UTC 的时间戳，只要其中一个的相邻两行间隔超过"该段正常采样间隔 + 3 s"，就拆段。对 0.1 s 采样的数据，这就是"超过 3 秒"。
-- 采样间隔按测试仪的档位（0.1、1、10、60 s）判断：取步骤内间隔的中位数，向上取到最接近的档位。如果不这样做，10 s、60 s 采样的文件每一行都会被拆开。
-- 时间戳只用来找断档，精度只有 1 s；删除重复时间戳（D32）仍然按 ProgTime 判断。
-- 拆段位置（全部数据只有这 4 个文件、7 处）：
+**D36. Splitting at logging gaps.**
+- Rule: if either ProgTime or the time stamp converted to UTC has a step between two adjacent rows larger than "normal logging interval of the part + 3 s", the series is split. For data logged every 0.1 s this means "more than 3 seconds".
+- The logging interval is judged by the tester's levels (0.1, 1, 10, 60 s): the median interval inside the step, rounded up to the nearest level. Without this, files logged every 10 s or 60 s would be split at every row.
+- The time stamp is used only to find gaps (1 s resolution); repeated time stamps (D32) are still judged by ProgTime.
+- Split positions (only these 4 files and 7 places in all the data):
 
-| 文件 | 拆段位置 | 原因 | 结果 |
+| File | Split position | Reason | Result |
 |---|---|---|---|
-| 602_Mixed4（主数据集） | 第 8027 行之前 | ProgTime 断档 416.0 s（先删掉了冻结行，见 D32） | part1：3,868 行、387 s，SOC 100→93.5 %；part2：57,649 行，SOC 88.3→5.0 % |
-| 571_Mixed6（主数据集） | 第 391 行之前 | 隐藏暂停：时间戳从 11/15 01:10:55 跳到 11:36:21（10.4 h），ProgTime 只走了 0.003 s | part1：391 行、39 s，SOC 100→99.6 %；part2：73,529 行 |
-| 549_Charge（_excluded） | 第 215、431、644 行之前 | 断档 80,263 s、151,846 s、1,669 s（文件由 4 次独立充电合并而成） | 4 段 |
-| 582_LA92 第一次运行（_excluded） | 第 1943、426 行之前 | 断档 16.2 s、3.6 s | 3 段，其中一段只有 1 行 |
+| 602_Mixed4 (main data set) | before row 8027 | ProgTime gap of 416.0 s (frozen rows removed first, see D32) | part1: 3,868 rows, 387 s, SOC 100 -> 93.5 %; part2: 57,649 rows, SOC 88.3 -> 5.0 % |
+| 571_Mixed6 (main data set) | before row 391 | hidden pause: the time stamp jumps from 11/15 01:10:55 to 11:36:21 (10.4 h) while ProgTime advances only 0.003 s | part1: 391 rows, 39 s, SOC 100 -> 99.6 %; part2: 73,529 rows |
+| 549_Charge (_excluded) | before rows 215, 431, 644 | gaps of 80,263 s, 151,846 s, 1,669 s (the file merges 4 separate charges) | 4 parts |
+| first run of 582_LA92 (_excluded) | before rows 1943, 426 | gaps of 16.2 s, 3.6 s | 3 parts, one with a single row |
 
-**D37. 隐藏暂停。**
-- 两次隐藏暂停的机制相同：10 °C、接近满电时，回馈电流脉冲把端电压推到 4.23 V 以上（571_Mixed6 为 4.2399 V、+2.86 A；582_LA92 为 4.2345 V、+2.99 A），测试仪保护停机，第二天人工继续。
-- 暂停期间 ProgTime 停止计时，所以只看 ProgTime 发现不了，要同时看时间戳。
-- 两次暂停中，Ah 计数前后连续，所以 SOC 标签不受影响；但电池经过了 10 小时以上的静置，极化状态完全改变，所以必须拆段。
-- 用新规则扫描全部文件后，没有发现其他隐藏暂停。
+**D37. Hidden pauses.**
+- Both hidden pauses have the same mechanism: at 10 °C, near full charge, a regenerative current pulse pushed the terminal voltage above 4.23 V (571_Mixed6: 4.2399 V, +2.86 A; 582_LA92: 4.2345 V, +2.99 A); the tester stopped for protection and the test was continued by hand the next day.
+- ProgTime stops during the pause, so the pause cannot be found from ProgTime alone; the time stamp must be checked as well.
+- In both pauses the Ah count is continuous, so the SOC label is not affected; but the cell rested for more than 10 hours and its polarisation state changed completely, so the series must be split.
+- A scan of all files with the new rule found no other hidden pause.
 
-**D38. 小断档不拆段。** LA92 每跑完一遍工况（每 14,361 行）会有一个 1.4-2.1 s 的记录空隙，UDDS 在第 137,001 行也有一个。它们都小于阈值，与 v1 一致，不拆段。
+**D38. Small gaps are not split.** Every LA92 repetition (every 14,361 rows) leaves a logging gap of 1.4-2.1 s, and UDDS has one at row 137,001. All are below the threshold and, as in v1, not split.
 
-**D39. time_s 从 0 开始，不重采样。** 每条序列的 time_s 都从 0 起算，原始的起止时间（当地时间和 UTC）和 ProgTime 行号记在 manifest 里。不同测试的采样间隔本来就不同：工况和 PausCycl 为 0.1 s，Cap_1C 为 10 s，C/20、0.5C、2C 为 60 s，HPPC 在 0.1、1、10 s 之间切换。这里不做重采样，留给各模型阶段。
-
----
-
-## 7. 数据质量检查
-
-**D40. 温度核对。** 判断标准是测试段（放电或工况步骤）内电池的**最低**温度与文件夹温度相差不超过 3 °C。用最低温度，是因为自发热只会让温度升高，最低温度最接近实验舱温度。
-- 主数据集 102 条序列全部通过。
-- 不通过的都在排除名单里：562 的 6 个文件、571_Cap_1C、557_Cap_1C。
-- 40 °C 文件夹的测试实际在 38.2-39.5 °C，25 °C 的在 23.6-24.3 °C，属于固定偏差。低温下 US06 和 2C 放电会自发热 4-6 °C，但开始时都在舱温。
-
-**D41. 冻结记录扫描。**
-- 在全部文件中查找"时间在走，但电压、电流、温度、Ah 全都不变，持续超过 30 秒"的段落，共 2352 段，**全部位于静置步骤**（电流为 0），最长 15 分钟。
-- 原因是量化步长：电压约 0.17 mV，温度约 0.105 °C。静置后期电压变化太慢，读数就会连续重复。
-- 逐段检查了段落结束时电压有没有跳变：中位数为 0，只有 2 段超过 0.42 mV。一段是 549_Charge 两次独立充电之间的衔接处，另一段只有 0.5 mV，属于噪声。
-- 结论：全部是正常静置，不删除。真正的记录异常只有 602_Mixed4 的冻结行（D32）和两次隐藏暂停（D37）。
-
-**D42. 工况曲线指纹比对。**
-- 用功率曲线的相关系数核对每个工况文件，全部与文件名一致（0.93-1.00）。
-- PausCycl 与 UDDS 前段一致（0.97-0.995）。
-- 数据集里不存在 25 °C 的 HWFET，也不存在 0 °C 和 10 °C 的 Mixed3：这两个温度的 CyclesB 程序跳过了 Charge9 和 Mixed3。
-
-**D43. 575 批次（10 °C 的 HPPC、C20DisCh、Dis_0p5C、Dis_2C）：电池档案选错。**
-- 表头写的是 LG ICR18650MG1（标称 2.9 Ah，"内埋热电偶"）。但温度读数与其他文件在同一个 0.10516 °C 的量化网格上、偏移相同；10 °C 的 HPPC 电阻（50 % SOC 时 38 mΩ）正好在 0 °C（53 mΩ）和 25 °C（27 mΩ）之间；C/20 容量也落在老化趋势上。这些都说明仍是同一颗 HG2，只是软件里选错了电池档案。
-- 唯一的实际影响：**测试电流是按 2.9 Ah 设定的，比其他温度低 3.3 %**（例如 2C 为 5.8 A，不是 6 A），HPPC 每个 SOC 台阶是 0.145 Ah，不是 0.15 Ah。
-- 予以保留，manifest 里有注明。
-
-**D44. 与 v1 的回归比对。**
-- 满容量不变的文件，电压、电流、温度与 v1 逐点相同（差别在 float32 精度以内）。
-- 满容量改变的文件，SOC 严格满足 (soc_新 − 1) × C_新 = (soc_旧 − 1) × C_旧。
-- 行数的差别都能一一解释：删掉的重复行、602 的冻结行、582 恢复运行后多保留的 907 行。
+**D39. time_s starts at 0; no resampling.** time_s of every series starts at 0; the original start and end times (local and UTC) and the ProgTime row numbers are in the manifest. Different tests have different logging intervals: 0.1 s for drive cycles and PausCycl, 10 s for Cap_1C, 60 s for C/20, 0.5C and 2C, and HPPC switches between 0.1, 1 and 10 s. No resampling is done here; it is left to the model stages.
 
 ---
 
-## 8. 已知局限
+## 7. Data quality checks
 
-1. 满容量依赖老化模型的地方（567、571、557 和特性测试文件）有模型误差。在 7-20 Ah 的外推范围内，模型验证误差约 ±0.4 %；567 外推了 50 Ah，误差可能更大，其末尾 SOC 的不确定范围为 5.0-6.0 %（D19）。
-2. −20 °C 特性测试的老化速率只来自一对数据（D22）。
-3. 556 只做了跨温度检验，依赖"40 °C 容量比 25 °C 高 0.5-1.0 %"这个假设（D21）。
-4. 低温 Dis_0p5C 的起始 SOC 是由 Ah 平衡反推的，不确定度约 ±0.5 个百分点（D14）。
-5. C/20 充电段的库仑计数不闭合（D15）；小电流下测得的 Ah 精度有限。
-6. 特性测试的 SOC 用的是 1C 容量标尺，低温下会出现负值（D12）。如果需要热力学意义上的 SOC（0-100 % 对应 C/20 容量），可以用 ah 列重算。
-7. C/20、0.5C、2C 为 60 s 采样，只适合做准静态分析，不适合辨识快速动态。
-8. 575 批次的测试电流比其他温度低 3.3 %（D43）。
-9. 同一颗电池在整个数据集中持续老化，不同温度之间的差异也包含老化的影响（D3）。
+**D40. Temperature check.** Criterion: the **minimum** cell temperature during the test part (discharge or cycle steps) is within 3 °C of the folder temperature. The minimum is used because self-heating only raises the temperature, so the minimum is closest to the chamber temperature.
+- All 102 series of the main data set pass.
+- Every failure is in the exclusion list: the 6 files of 562, 571_Cap_1C and 557_Cap_1C.
+- The tests of the 40 °C folder actually ran at 38.2-39.5 °C and those of 25 °C at 23.6-24.3 °C, a constant offset. At low temperature US06 and the 2C discharge self-heat by 4-6 °C, but they all start at the chamber temperature.
+
+**D41. Scan for frozen records.**
+- All files were searched for stretches where "time advances but voltage, current, temperature and Ah all stay the same for more than 30 seconds": 2352 stretches, **all in rest steps** (current 0), the longest 15 minutes.
+- The cause is the quantisation step: about 0.17 mV for voltage, about 0.105 °C for temperature. Late in a rest the voltage changes so slowly that the readings repeat.
+- The voltage jump at the end of every stretch was checked: median 0; only 2 stretches above 0.42 mV. One is the join between two separate charges in 549_Charge; the other is only 0.5 mV, i.e. noise.
+- Conclusion: all are normal rests and are not removed. The only real logging faults are the frozen rows of 602_Mixed4 (D32) and the two hidden pauses (D37).
+
+**D42. Fingerprint check of the drive-cycle profiles.**
+- Every drive-cycle file was checked with the correlation of its power profile; all match their file names (0.93-1.00).
+- PausCycl matches the first part of UDDS (0.97-0.995).
+- The data set has no HWFET at 25 °C and no Mixed3 at 0 °C and 10 °C: at these two temperatures the CyclesB program skipped Charge9 and Mixed3.
+
+**D43. Batch 575 (HPPC, C20DisCh, Dis_0p5C, Dis_2C at 10 °C): wrong cell profile.**
+- The header says LG ICR18650MG1 (nominal 2.9 Ah, "embedded thermocouple"). But the temperature readings lie on the same 0.10516 °C quantisation grid with the same offset as the other files; the 10 °C HPPC resistance (38 mOhm at 50 % SOC) lies between 0 °C (53 mOhm) and 25 °C (27 mOhm); and the C/20 capacity follows the aging trend. All of this shows it is still the same HG2 cell and only the wrong cell profile was chosen in the software.
+- The only real effect: **the test currents were set for 2.9 Ah, 3.3 % lower than at the other temperatures** (e.g. 2C is 5.8 A, not 6 A), and each HPPC SOC step is 0.145 Ah, not 0.15 Ah.
+- Kept, with a note in the manifest.
+
+**D44. Regression comparison with v1.**
+- In files whose full capacity did not change, voltage, current and temperature are identical to v1 point by point (differences within float32 precision).
+- In files whose full capacity changed, the SOC satisfies (soc_new − 1) × C_new = (soc_old − 1) × C_old exactly.
+- Every difference in row counts is explained: removed repeated rows, the frozen rows of 602, and the 907 extra rows kept after the restart of 582.
 
 ---
 
-## 9. 与 v1（`archive/v1_2026-09-28/`）的主要差异
+## 8. Known limitations
 
-| 方面 | v1 | v2 |
+1. Where the full capacity depends on the aging model (567, 571, 557 and the characterisation files) there is model error. Within extrapolations of 7-20 Ah the validation error of the model is about ±0.4 %; 567 is extrapolated by 50 Ah and its error may be larger; its final SOC is stated as 5.0-6.0 % (D19).
+2. The aging rate of the −20 °C characterisation tests comes from one pair of data only (D22).
+3. 556 has only a cross-temperature check and depends on the assumption "the capacity at 40 °C is 0.5-1.0 % above that at 25 °C" (D21).
+4. The start SOC of Dis_0p5C at low temperature is back-calculated from the Ah balance, with an uncertainty of about ±0.5 percentage points (D14).
+5. The Coulomb count of the C/20 charge does not close (D15); Ah measured at small currents has limited accuracy.
+6. The SOC of the characterisation tests uses the 1C capacity as yardstick and becomes negative at low temperature (D12). A thermodynamic SOC (0-100 % of the C/20 capacity) can be recomputed from the ah column.
+7. C/20, 0.5C and 2C are logged every 60 s; they suit quasi-static analysis only, not the identification of fast dynamics.
+8. The test currents of batch 575 are 3.3 % lower than at the other temperatures (D43).
+9. The same cell aged throughout the data set; differences between temperatures also contain the effect of aging (D3).
+
+---
+
+## 9. Main differences from v1 (`archive/v1_2026-09-28/`)
+
+| Aspect | v1 | v2 |
 |---|---|---|
-| 输出内容 | 只有工况和 Mixed，已为 LSTM 做成 (V, I, T, SOC) 的 float32 npy | 所有测试类型，每个原始文件一条独立序列（CSV），另外保存了排除的数据 |
-| 567 满容量 | 借用 571 的冷容量 2.4851（末尾 0.2 %） | 2.6332（末尾 5.8 %） |
-| 571 满容量 | 自己的冷容量 2.4851（末尾 5.0 %） | 2.5953（末尾 9.0 %） |
-| 557 满容量 | 自己的冷容量 2.5004（末尾 5.0 %） | 2.6197（末尾 9.3 %） |
-| 590 / 601 / 604 / 582 | 借用最近的 Cap_1C（末尾 5.9 / 4.6 / 5.5 / 5.2 %） | 各自的停机容量（末尾都是 5.0 %） |
-| 602_Mixed4 | part1 末尾留着 4160 行冻结记录 | 冻结记录已删除 |
-| 571_Mixed6 | 没有发现 10.4 h 的隐藏暂停 | 在暂停处拆段 |
-| 582_LA92 | 丢掉前 1945 行 | 只丢掉 11/25 的第一次运行和重复写入的行，多保留 907 行 |
-| 重复时间戳 | 保留 | 删除，保留第一条 |
-| 时间 | 不保存 | time_s，以及原始当地时间和 UTC（manifest） |
+| Output | drive cycles and Mixed only, already turned into float32 npy of (V, I, T, SOC) for the LSTM | every test type, one independent series (CSV) per raw file, plus the excluded data |
+| Full capacity of 567 | borrowed the cold capacity of 571, 2.4851 (final 0.2 %) | 2.6332 (final 5.8 %) |
+| Full capacity of 571 | its own cold capacity, 2.4851 (final 5.0 %) | 2.5953 (final 9.0 %) |
+| Full capacity of 557 | its own cold capacity, 2.5004 (final 5.0 %) | 2.6197 (final 9.3 %) |
+| 590 / 601 / 604 / 582 | borrowed the nearest Cap_1C (final 5.9 / 4.6 / 5.5 / 5.2 %) | each its own cutoff capacity (final 5.0 % each) |
+| 602_Mixed4 | 4160 frozen records left at the end of part1 | frozen records removed |
+| 571_Mixed6 | the 10.4 h hidden pause was not found | split at the pause |
+| 582_LA92 | first 1945 rows dropped | only the first run of 11/25 and the duplicated rows dropped; 907 more rows kept |
+| Repeated time stamps | kept | removed, the first one kept |
+| Time | not stored | time_s, plus the original local time and UTC (manifest) |

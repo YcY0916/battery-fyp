@@ -1,0 +1,49 @@
+{
+  "features": [
+    "voltage",
+    "current",
+    "temperature"
+  ],
+  "mean": [
+    3.6828434239374084,
+    -1.2188044965468743,
+    15.343116443017118
+  ],
+  "std": [
+    0.2777613662170862,
+    2.49002449440876,
+    12.32684653452771
+  ],
+  "n_rows": 152004,
+  "computed_from": [
+    "0degC/589_Mixed1",
+    "0degC/589_Mixed2",
+    "0degC/590_Mixed4",
+    "0degC/590_Mixed5",
+    "0degC/590_Mixed6",
+    "0degC/590_Mixed7",
+    "10degC/567_Mixed1",
+    "10degC/567_Mixed2",
+    "10degC/571_Mixed4",
+    "10degC/571_Mixed5",
+    "10degC/571_Mixed6_part1",
+    "10degC/571_Mixed6_part2",
+    "10degC/571_Mixed7",
+    "25degC/551_Mixed1",
+    "25degC/551_Mixed2",
+    "25degC/552_Mixed3",
+    "25degC/552_Mixed4",
+    "25degC/552_Mixed5",
+    "25degC/552_Mixed6",
+    "25degC/552_Mixed7",
+    "40degC/556_Mixed1",
+    "40degC/556_Mixed2"
+  ],
+  "note": "Computed once from the training set only (all rows after 1 s resampling); validation and test sets use these values unchanged.",
+  "temperatures_C": [
+    0,
+    10,
+    25,
+    40
+  ]
+}

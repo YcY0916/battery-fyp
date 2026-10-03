@@ -1,0 +1,2 @@
+# Protocol files are hashed; keep LF line endings on every checkout
+protocol/v2/* text eol=lf
