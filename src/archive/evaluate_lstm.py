@@ -1,18 +1,18 @@
-"""在测试集上评估选定的一组 LSTM 配置。
+"""Evaluate one chosen LSTM config on the test set.
 
-超参数对比阶段不要运行本脚本。等根据 results/lstm_sweep_ext/sweep_results_22.csv（只看验证集）
-选定配置之后，再手动运行一次，例如：
+Do not run this script during the hyperparameter comparison. Run it once by hand after the config has been chosen
+from results/lstm_sweep_ext/sweep_results_22.csv (validation set only), for example:
     python src/evaluate_lstm.py --window 240 --hidden 128 --layers 1
 
-权重会自动在 models/lstm_sweep_ext/ 和 models/lstm_sweep/ 里找（也可以用 --name 指定）。
-默认只评估序列内行号 >= 239 的点（与扩展后的验证集一致），可用 --eval-start 修改。
+The weights are looked up in models/lstm_sweep_ext/ and models/lstm_sweep/ (or given with --name).
+By default only points with in-sequence row index >= 239 are scored (as in the extended validation set); --eval-start changes this.
 
-输出到 results/<name>/test_eval/<配置>_start<评估起点>/：
-    rmse_table.csv / mae_table.csv   温度 x 工况的 RMSE / MAE（SOC 百分点）
-    per_file_metrics.csv             每个测试文件的指标
-    summary.json                     全部测试点合在一起的 RMSE / MAE，以及评估设置
-    predictions/<文件>.csv           每个测试文件逐秒的真实 SOC 和预测 SOC
-    plots/<文件>.png                 每个测试文件的"真实 SOC vs 预测 SOC"曲线
+Outputs in results/<name>/test_eval/<config>_start<evaluation start>/:
+    rmse_table.csv / mae_table.csv   RMSE / MAE per temperature x cycle (SOC percentage points)
+    per_file_metrics.csv             metrics of every test file
+    summary.json                     RMSE / MAE over all test points together, and the evaluation settings
+    predictions/<file>.csv           true and predicted SOC of every test file, second by second
+    plots/<file>.png                 "true SOC vs predicted SOC" curve of every test file
 """
 
 from __future__ import annotations
@@ -64,14 +64,14 @@ def plot_file(sec, y_true, y_pred, title, path):
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="在测试集上评估选定的 LSTM 配置")
+    p = argparse.ArgumentParser(description="Evaluate the chosen LSTM config on the test set")
     p.add_argument("--window", type=int, required=True)
     p.add_argument("--hidden", type=int, required=True)
     p.add_argument("--layers", type=int, required=True)
     p.add_argument("--name", default=None,
-                   help=f"对比实验的输出名（models/<name>/）；默认依次在 {EXT_NAME}、{DEFAULT_NAME} 里找")
+                   help=f"output name of the comparison (models/<name>/); default: look in {EXT_NAME}, then {DEFAULT_NAME}")
     p.add_argument("--eval-start", type=int, default=D.EVAL_START_INDEX,
-                   help=f"只评估序列内行号 >= 该值的点（默认 {D.EVAL_START_INDEX}，与扩展后的验证集相同）")
+                   help=f"score only points with in-sequence row index >= this value (default {D.EVAL_START_INDEX}, as in the extended validation set)")
     p.add_argument("--device", choices=["auto", "cuda", "cpu"], default="auto")
     args = p.parse_args()
 
@@ -79,21 +79,21 @@ def main() -> None:
     names = [args.name] if args.name else [EXT_NAME, DEFAULT_NAME]
     found = [n for n in names if (ROOT / "models" / n / f"{cname}.pt").exists()]
     if not found:
-        raise SystemExit(f"在 models/{{{','.join(names)}}}/ 里找不到 {cname}.pt，请先用 sweep_lstm.py 训练这一组")
+        raise SystemExit(f"{cname}.pt not found in models/{{{','.join(names)}}}/; train this config with sweep_lstm.py first")
     if len(found) > 1:
-        raise SystemExit(f"{cname}.pt 同时存在于 {found}，请用 --name 指定用哪一个")
+        raise SystemExit(f"{cname}.pt exists in both {found}; choose one with --name")
     args.name = found[0]
     ckpt_path = ROOT / "models" / args.name / f"{cname}.pt"
     device = pick_device(args.device)
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
     cfg, stats, settings = ckpt["config"], ckpt["norm_stats"], ckpt["settings"]
     if list(ckpt["features"]) != D.FEATURES:
-        raise SystemExit(f"权重的输入特征 {ckpt['features']} 与 {D.FEATURES} 不一致")
+        raise SystemExit(f"input features of the weights {ckpt['features']} differ from {D.FEATURES}")
     stats_path = ROOT / "results" / args.name / "norm_stats.json"
     if stats_path.exists():
         saved = D.load_norm_stats(stats_path)
         if not (np.allclose(saved["mean"], stats["mean"]) and np.allclose(saved["std"], stats["std"])):
-            raise SystemExit(f"权重里的标准化参数与 {stats_path.relative_to(ROOT)} 不一致")
+            raise SystemExit(f"the normalisation stats in the weights differ from {stats_path.relative_to(ROOT)}")
 
     model = LSTMSOC(hidden_size=cfg["hidden_size"], num_layers=cfg["num_layers"],
                     input_size=cfg["input_size"])
@@ -102,17 +102,17 @@ def main() -> None:
     window = cfg["window"]
     eval_start = max(args.eval_start, window - 1)
 
-    # 目录名带上评估起点，换起点重评时不会覆盖之前的结果
+    # the folder name includes the evaluation start, so re-evaluating with another start never overwrites earlier results
     out = ROOT / "results" / args.name / "test_eval" / f"{cname}_start{eval_start}"
     (out / "plots").mkdir(parents=True, exist_ok=True)
     (out / "predictions").mkdir(parents=True, exist_ok=True)
 
     folders = settings["folders"]
     splits = D.build_splits(folders)
-    print(f"配置 {cname}（{args.name}，最佳轮 {ckpt['best_epoch']}，训练时的验证 RMSE "
-          f"{ckpt['val_rmse_pct']:.3f}%，评估起点 {settings['eval_start_index']}），"
-          f"设备 {device}，评估行号 >= {eval_start}")
-    print(f"读取测试集 {len(splits['test'])} 个文件 ...")
+    print(f"Config {cname} ({args.name}, best epoch {ckpt['best_epoch']}, validation RMSE during training "
+          f"{ckpt['val_rmse_pct']:.3f}%, evaluation start {settings['eval_start_index']}), "
+          f"device {device}, scoring rows >= {eval_start}")
+    print(f"Reading the {len(splits['test'])} test files ...")
     test_seqs = D.load_sequences(splits["test"])
 
     rows, all_err = [], []
@@ -140,7 +140,7 @@ def main() -> None:
     per_file = pd.DataFrame(rows)
     per_file.to_csv(out / "per_file_metrics.csv", index=False, float_format="%.4f")
 
-    # 温度 x 工况表；"all" 行/列是把对应的测试点合在一起重新算（不是对格子取平均）
+    # temperature x cycle table; the "all" row / column recomputes the metric over the pooled test points (not an average of cells)
     temps = [TEMP_LABEL[f] for f in D.TEMP_FOLDERS if f in folders]
     err_by_file = dict(zip(per_file["file"], all_err))
     tables = {}
@@ -162,7 +162,7 @@ def main() -> None:
         tab.index.name = "temperature"
         tab.to_csv(out / f"{metric}_table.csv", float_format="%.4f")
         tables[metric] = tab
-        print(f"\n测试集 {metric.upper()}（SOC 百分点；'-' 表示没有该文件）：")
+        print(f"\nTest {metric.upper()} (SOC percentage points; '-' means no such file):")
         print(tab.to_string(float_format=lambda v: f"{v:.3f}", na_rep="-"))
 
     e = np.concatenate(all_err)
@@ -176,9 +176,9 @@ def main() -> None:
                "evaluated_at": datetime.now().isoformat(timespec="seconds")}
     with open(out / "summary.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
-    print(f"\n全部测试点：RMSE {summary['test_rmse_pct']:.3f}%，MAE {summary['test_mae_pct']:.3f}%"
-          f"（{summary['n_test_points']:,} 点）")
-    print(f"结果已写入 {out.relative_to(ROOT).as_posix()}/")
+    print(f"\nAll test points: RMSE {summary['test_rmse_pct']:.3f}%, MAE {summary['test_mae_pct']:.3f}%"
+          f" ({summary['n_test_points']:,} points)")
+    print(f"Results written to {out.relative_to(ROOT).as_posix()}/")
 
 
 if __name__ == "__main__":

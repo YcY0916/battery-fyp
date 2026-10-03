@@ -10,8 +10,8 @@ index >= 299 like the validation set. Results are reported as mean +- sample std
 "Average" is the mean over the test files of each seed's per-file metric, then mean +- std over
 seeds; the RMSE pooled over all test points is also given in test_summary.csv.
 
-Capacity marks come from manifest.json (capacity_rule): '†' = full capacity back-calculated from
-the discharge cutoff capacity (rule 2), '‡' = full capacity borrowed from batch 576's Cap_1C with an
+Capacity marks come from manifest.json (capacity_rule): 'a' = full capacity back-calculated from
+the discharge cutoff capacity (rule 2), 'b' = full capacity borrowed from batch 576's Cap_1C with an
 aging correction (rule 3; this 10 degC US06 label is known to be biased); no mark = the batch's own
 Cap_1C test.
 
@@ -51,10 +51,10 @@ from lstm_model import LSTMSOC  # noqa: E402
 
 QUIET = lambda *_: None  # noqa: E731
 UNSEEN_FOLDERS = ["n20degC", "n10degC"]
-MARK_TEX = {"†": r"$^\dagger$", "‡": r"$^\ddagger$"}
+MARK_TEX = {"a": r"$^\mathrm{a}$", "b": r"$^\mathrm{b}$"}
 # Expected marks for the 0-40 degC test set (checked against the manifest)
-EXPECTED_MARKS = {"10degC/582_LA92": "†", "40degC/556_UDDS": "†", "40degC/556_HWFET": "†",
-                  "40degC/556_LA92": "†", "40degC/556_US06": "†", "10degC/567_US06": "‡"}
+EXPECTED_MARKS = {"10degC/582_LA92": "a", "40degC/556_UDDS": "a", "40degC/556_HWFET": "a",
+                  "40degC/556_LA92": "a", "40degC/556_US06": "a", "10degC/567_US06": "b"}
 
 
 def capacity_marks(ids: list[str]) -> dict[str, str]:
@@ -62,7 +62,7 @@ def capacity_marks(ids: list[str]) -> dict[str, str]:
     marks = {}
     for i in ids:
         rule = str(series[i].get("capacity_rule") or "")
-        marks[i] = "†" if rule.startswith("2") else "‡" if rule.startswith("3") else ""
+        marks[i] = "a" if rule.startswith("2") else "b" if rule.startswith("3") else ""
     return marks
 
 
@@ -197,10 +197,10 @@ def latex_table(res: pd.DataFrame, folders: list[str], cname: str, n_seeds: int,
     notes = []
     if has_missing:
         notes.append(r"--: no data (25\,$^\circ$C HWFET raw record corrupted).")
-    if "†" in used_marks:
-        notes.append(r"$^\dagger$Full capacity back-calculated from the discharge cutoff capacity.")
-    if "‡" in used_marks:
-        notes.append(r"$^\ddagger$Full capacity from batch 576 Cap\_1C with aging correction; "
+    if "a" in used_marks:
+        notes.append(r"$^\mathrm{a}$Full capacity back-calculated from the discharge cutoff capacity.")
+    if "b" in used_marks:
+        notes.append(r"$^\mathrm{b}$Full capacity from batch 576 Cap\_1C with aging correction; "
                      r"label known to be biased.")
     if used_marks - {""}:
         notes.append(r"Others: full capacity from the batch's own Cap\_1C test.")
@@ -279,7 +279,7 @@ def main() -> None:
     log(f"\nTest MAE:\n{grid_table(res, 'mae', ctx.folders).to_string()}")
     log(f"\nAverage over {n_files} files: RMSE {pm(*avg['rmse'])}, MAE {pm(*avg['mae'])}; "
         f"pooled RMSE {pm(*pooled['rmse'])}")
-    log("Marks: † capacity back-calculated from cutoff capacity; ‡ batch-576 capacity with aging "
+    log("Marks: a = capacity back-calculated from cutoff capacity; b = batch-576 capacity with aging "
         "correction (label known to be biased)")
 
     record = {"config": cname, "seeds": ctx.seeds, "eval_start_index": C.EVAL_START,
